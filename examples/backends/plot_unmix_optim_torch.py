@@ -4,6 +4,9 @@ r"""
 Wasserstein unmixing with PyTorch
 =================================
 
+.. note::
+    Example added in release: 0.8.0.
+
 In this example we estimate mixing parameters from distributions that minimize
 the Wasserstein distance. In other words we suppose that a target
 distribution :math:`\mu^t` can be expressed as a weighted sum of source
@@ -45,7 +48,7 @@ import torch
 # Generate data
 # -------------
 
-#%% Data
+# %% Data
 
 nt = 100
 nt1 = 10  #
@@ -80,13 +83,13 @@ M = ot.dist(xs, xt)
 # Plot data
 # ---------
 
-#%% plot the distributions
+# %% plot the distributions
 
 pl.figure(1)
-pl.scatter(xt[:, 0], xt[:, 1], label='Target $\mu^t$', alpha=0.5)
-pl.scatter(xs1[:, 0], xs1[:, 1], label='Source $\mu^s_1$', alpha=0.5)
-pl.scatter(xs2[:, 0], xs2[:, 1], label='Source $\mu^s_2$', alpha=0.5)
-pl.title('Sources and Target distributions')
+pl.scatter(xt[:, 0], xt[:, 1], label="Target $\mu^t$", alpha=0.5)
+pl.scatter(xs1[:, 0], xs1[:, 1], label="Source $\mu^s_1$", alpha=0.5)
+pl.scatter(xs2[:, 0], xs2[:, 1], label="Source $\mu^s_2$", alpha=0.5)
+pl.title("Sources and Target distributions")
 pl.legend()
 
 
@@ -95,7 +98,7 @@ pl.legend()
 # ------------------------------------------------------
 
 
-#%% Weights optimization with gradient descent
+# %% Weights optimization with gradient descent
 
 # convert numpy arrays to torch tensors
 H2 = torch.tensor(H)
@@ -120,7 +123,6 @@ def get_loss(w):
 
 
 for i in range(niter):
-
     loss = get_loss(w)
     losses.append(float(loss))
 
@@ -135,27 +137,34 @@ for i in range(niter):
 
 ##############################################################################
 # Estimated weights and convergence of the objective
-# ---------------------------------------------------
+# --------------------------------------------------
 
 we = w.detach().numpy()
-print('Estimated mixture:', we)
+print("Estimated mixture:", we)
 
 pl.figure(2)
 pl.semilogy(losses)
 pl.grid()
-pl.title('Wasserstein distance')
+pl.title("Wasserstein distance")
 pl.xlabel("Iterations")
 
 ##############################################################################
-# Ploting the reweighted source distribution
-# ------------------------------------------
+# Plotting the reweighted source distribution
+# -------------------------------------------
 
 pl.figure(3)
 
 # compute source weights
 ws = H.dot(we)
 
-pl.scatter(xt[:, 0], xt[:, 1], label='Target $\mu^t$', alpha=0.5)
-pl.scatter(xs[:, 0], xs[:, 1], color='C3', s=ws * 20 * ns, label='Weighted sources $\sum_{k} w_k\mu^s_k$', alpha=0.5)
-pl.title('Target and reweighted source distributions')
+pl.scatter(xt[:, 0], xt[:, 1], label="Target $\mu^t$", alpha=0.5)
+pl.scatter(
+    xs[:, 0],
+    xs[:, 1],
+    color="C3",
+    s=ws * 20 * ns,
+    label="Weighted sources $\sum_{k} w_k\mu^s_k$",
+    alpha=0.5,
+)
+pl.title("Target and reweighted source distributions")
 pl.legend()

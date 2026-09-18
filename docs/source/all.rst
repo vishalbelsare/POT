@@ -13,26 +13,41 @@ API and modules
    :toctree: gen_modules/
    :template: module.rst
 
-   lp
+   
    backend
+   batch
    bregman
-   smooth
-   gromov
-   optim
+   bsp
+   coot
    da
-   gpu
-   dr
-   utils
    datasets
+   dr
+   factored
+   gaussian
+   gmm
+   gnn
+   gromov
+   lowrank
+   lp
+   mapping
+   optim
+   partial
    plot
+   regpath
+   sliced
+   sgot
+   smooth
    stochastic
    unbalanced
-   partial
-   sliced
+   utils
+   weak
+   
 
-.. autosummary::
-   :toctree: ../modules/generated/
-   :template: module.rst
+Main :py:mod:`ot` functions
+---------------------------
 
 .. automodule:: ot
    :members:
+
+
+

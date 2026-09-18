@@ -24,7 +24,7 @@ arXiv preprint arXiv:1510.06567.
 
 
 """
-# sphinx_gallery_thumbnail_number = 4
+# sphinx_gallery_thumbnail_number = 5
 
 import numpy as np
 import matplotlib.pylab as pl
@@ -35,7 +35,7 @@ import ot.plot
 # Generate data
 # -------------
 
-#%% parameters
+# %% parameters
 
 n = 100  # nb bins
 
@@ -54,18 +54,18 @@ M /= M.max()
 # Solve EMD
 # ---------
 
-#%% EMD
+# %% EMD
 
 G0 = ot.emd(a, b, M)
 
-pl.figure(3, figsize=(5, 5))
-ot.plot.plot1D_mat(a, b, G0, 'OT matrix G0')
+pl.figure(1, figsize=(5, 5))
+ot.plot.plot1D_mat(a, b, G0, "OT matrix G0")
 
 ##############################################################################
 # Solve EMD with Frobenius norm regularization
 # --------------------------------------------
 
-#%% Example with Frobenius norm regularization
+# %% Example with Frobenius norm regularization
 
 
 def f(G):
@@ -80,14 +80,14 @@ reg = 1e-1
 
 Gl2 = ot.optim.cg(a, b, M, reg, f, df, verbose=True)
 
-pl.figure(3)
-ot.plot.plot1D_mat(a, b, Gl2, 'OT matrix Frob. reg')
+pl.figure(2)
+ot.plot.plot1D_mat(a, b, Gl2, "OT matrix Frob. reg")
 
 ##############################################################################
 # Solve EMD with entropic regularization
 # --------------------------------------
 
-#%% Example with entropic regularization
+# %% Example with entropic regularization
 
 
 def f(G):
@@ -95,21 +95,21 @@ def f(G):
 
 
 def df(G):
-    return np.log(G) + 1.
+    return np.log(G) + 1.0
 
 
 reg = 1e-3
 
 Ge = ot.optim.cg(a, b, M, reg, f, df, verbose=True)
 
-pl.figure(4, figsize=(5, 5))
-ot.plot.plot1D_mat(a, b, Ge, 'OT matrix Entrop. reg')
+pl.figure(3, figsize=(5, 5))
+ot.plot.plot1D_mat(a, b, Ge, "OT matrix Entrop. reg")
 
 ##############################################################################
 # Solve EMD with Frobenius norm + entropic regularization
 # -------------------------------------------------------
 
-#%% Example with Frobenius norm + entropic regularization with gcg
+# %% Example with Frobenius norm + entropic regularization with gcg
 
 
 def f(G):
@@ -125,6 +125,34 @@ reg2 = 1e-1
 
 Gel2 = ot.optim.gcg(a, b, M, reg1, reg2, f, df, verbose=True)
 
-pl.figure(5, figsize=(5, 5))
-ot.plot.plot1D_mat(a, b, Gel2, 'OT entropic + matrix Frob. reg')
+pl.figure(4, figsize=(5, 5))
+ot.plot.plot1D_mat(a, b, Gel2, "OT entropic + matrix Frob. reg")
 pl.show()
+
+
+# %%
+# Comparison of the OT matrices
+
+nvisu = 40
+
+pl.figure(5, figsize=(10, 4))
+
+pl.subplot(2, 2, 1)
+pl.imshow(G0[:nvisu, :], cmap="gray_r")
+pl.axis("off")
+pl.title("Exact OT")
+
+pl.subplot(2, 2, 2)
+pl.imshow(Gl2[:nvisu, :], cmap="gray_r")
+pl.axis("off")
+pl.title("Frobenius reg.")
+
+pl.subplot(2, 2, 3)
+pl.imshow(Ge[:nvisu, :], cmap="gray_r")
+pl.axis("off")
+pl.title("Entropic reg.")
+
+pl.subplot(2, 2, 4)
+pl.imshow(Gel2[:nvisu, :], cmap="gray_r")
+pl.axis("off")
+pl.title("Entropic + Frobenius reg.")

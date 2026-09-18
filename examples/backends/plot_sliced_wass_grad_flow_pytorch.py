@@ -1,16 +1,19 @@
 r"""
-=================================
+============================================================
 Sliced Wasserstein barycenter and gradient flow with PyTorch
-=================================
+============================================================
 
-In this exemple we use the pytorch backend to optimize the sliced Wasserstein
+.. note::
+    Example added in release: 0.8.0.
+
+In this example we use the pytorch backend to optimize the sliced Wasserstein
 loss between two empirical distributions [31].
 
 In the first example one we perform a
 gradient flow on the support of a distribution that minimize the sliced
-Wassersein distance as poposed in [36].
+Wasserstein distance as proposed in [36].
 
-In the second exemple we optimize with a gradient descent the sliced
+In the second example we optimize with a gradient descent the sliced
 Wasserstein barycenter between two distributions as in [31].
 
 [31] Bonneel, Nicolas, et al. "Sliced and radon wasserstein barycenters of
@@ -27,10 +30,11 @@ Machine Learning (pp. 4104-4113). PMLR.
 #
 # License: MIT License
 
+# sphinx_gallery_thumbnail_number = 4
+
 
 # %%
 # Loading the data
-
 
 import numpy as np
 import matplotlib.pylab as pl
@@ -38,8 +42,8 @@ import torch
 import ot
 import matplotlib.animation as animation
 
-I1 = pl.imread('../../data/redcross.png').astype(np.float64)[::4, ::4, 2]
-I2 = pl.imread('../../data/tooth.png').astype(np.float64)[::4, ::4, 2]
+I1 = pl.imread("../../data/redcross.png").astype(np.float64)[::5, ::5, 2]
+I2 = pl.imread("../../data/tooth.png").astype(np.float64)[::5, ::5, 2]
 
 sz = I2.shape[0]
 XX, YY = np.meshgrid(np.arange(sz), np.arange(sz))
@@ -65,19 +69,20 @@ x2_torch = torch.tensor(x2).to(device=device)
 
 
 lr = 1e3
-nb_iter_max = 100
+nb_iter_max = 50
 
 x_all = np.zeros((nb_iter_max, x1.shape[0], 2))
 
 loss_iter = []
 
 # generator for random permutations
-gen = torch.Generator()
+gen = torch.Generator(device=device)
 gen.manual_seed(42)
 
 for i in range(nb_iter_max):
-
-    loss = ot.sliced_wasserstein_distance(x1_torch, x2_torch, n_projections=20, seed=gen)
+    loss = ot.sliced_wasserstein_distance(
+        x1_torch, x2_torch, n_projections=20, seed=gen
+    )
 
     loss_iter.append(loss.clone().detach().cpu().numpy())
     loss.backward()
@@ -92,57 +97,61 @@ for i in range(nb_iter_max):
 xb = x1_torch.clone().detach().cpu().numpy()
 
 pl.figure(2, (8, 4))
-pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label='$\mu^{(0)}$')
-pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r'$\nu$')
-pl.scatter(xb[:, 0], xb[:, 1], alpha=0.5, label='$\mu^{(100)}$')
-pl.title('Sliced Wasserstein gradient flow')
+pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label="$\mu^{(0)}$")
+pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r"$\nu$")
+pl.scatter(xb[:, 0], xb[:, 1], alpha=0.5, label="$\mu^{(100)}$")
+pl.title("Sliced Wasserstein gradient flow")
 pl.legend()
 ax = pl.axis()
 
 # %%
 # Animate trajectories of the gradient flow along iteration
-# -------------------------------------------------------
+# ---------------------------------------------------------
 
 pl.figure(3, (8, 4))
 
 
 def _update_plot(i):
     pl.clf()
-    pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label='$\mu^{(0)}$')
-    pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r'$\nu$')
-    pl.scatter(x_all[i, :, 0], x_all[i, :, 1], alpha=0.5, label='$\mu^{(100)}$')
-    pl.title('Sliced Wasserstein gradient flow Iter. {}'.format(i))
+    pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label="$\mu^{(0)}$")
+    pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r"$\nu$")
+    pl.scatter(x_all[i, :, 0], x_all[i, :, 1], alpha=0.5, label="$\mu^{(100)}$")
+    pl.title("Sliced Wasserstein gradient flow Iter. {}".format(i))
     pl.axis(ax)
     return 1
 
 
-ani = animation.FuncAnimation(pl.gcf(), _update_plot, nb_iter_max, interval=100, repeat_delay=2000)
+ani = animation.FuncAnimation(
+    pl.gcf(), _update_plot, nb_iter_max, interval=100, repeat_delay=2000
+)
 
 # %%
 # Compute the Sliced Wasserstein Barycenter
-#
+# -----------------------------------------
 x1_torch = torch.tensor(x1).to(device=device)
 x3_torch = torch.tensor(x3).to(device=device)
 xbinit = np.random.randn(500, 2) * 10 + 16
 xbary_torch = torch.tensor(xbinit).to(device=device).requires_grad_(True)
 
 lr = 1e3
-nb_iter_max = 100
+nb_iter_max = 50
 
 x_all = np.zeros((nb_iter_max, xbary_torch.shape[0], 2))
 
 loss_iter = []
 
 # generator for random permutations
-gen = torch.Generator()
+gen = torch.Generator(device=device)
 gen.manual_seed(42)
 
 alpha = 0.5
 
 for i in range(nb_iter_max):
-
-    loss = alpha * ot.sliced_wasserstein_distance(xbary_torch, x3_torch, n_projections=50, seed=gen) \
-        + (1 - alpha) * ot.sliced_wasserstein_distance(xbary_torch, x1_torch, n_projections=50, seed=gen)
+    loss = alpha * ot.sliced_wasserstein_distance(
+        xbary_torch, x3_torch, n_projections=50, seed=gen
+    ) + (1 - alpha) * ot.sliced_wasserstein_distance(
+        xbary_torch, x1_torch, n_projections=50, seed=gen
+    )
 
     loss_iter.append(loss.clone().detach().cpu().numpy())
     loss.backward()
@@ -157,29 +166,31 @@ for i in range(nb_iter_max):
 xb = xbary_torch.clone().detach().cpu().numpy()
 
 pl.figure(4, (8, 4))
-pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label='$\mu$')
-pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r'$\nu$')
-pl.scatter(xb[:, 0] + 30, xb[:, 1], alpha=0.5, label='Barycenter')
-pl.title('Sliced Wasserstein barycenter')
+pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label="$\mu$")
+pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r"$\nu$")
+pl.scatter(xb[:, 0] + 30, xb[:, 1], alpha=0.5, label="Barycenter")
+pl.title("Sliced Wasserstein barycenter")
 pl.legend()
 ax = pl.axis()
 
 
 # %%
 # Animate trajectories of the barycenter along gradient descent
-# -------------------------------------------------------
+# -------------------------------------------------------------
 
 pl.figure(5, (8, 4))
 
 
 def _update_plot(i):
     pl.clf()
-    pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label='$\mu^{(0)}$')
-    pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r'$\nu$')
-    pl.scatter(x_all[i, :, 0] + 30, x_all[i, :, 1], alpha=0.5, label='$\mu^{(100)}$')
-    pl.title('Sliced Wasserstein barycenter Iter. {}'.format(i))
+    pl.scatter(x1[:, 0], x1[:, 1], alpha=0.5, label="$\mu^{(0)}$")
+    pl.scatter(x2[:, 0], x2[:, 1], alpha=0.5, label=r"$\nu$")
+    pl.scatter(x_all[i, :, 0] + 30, x_all[i, :, 1], alpha=0.5, label="$\mu^{(100)}$")
+    pl.title("Sliced Wasserstein barycenter Iter. {}".format(i))
     pl.axis(ax)
     return 1
 
 
-ani = animation.FuncAnimation(pl.gcf(), _update_plot, nb_iter_max, interval=100, repeat_delay=2000)
+ani = animation.FuncAnimation(
+    pl.gcf(), _update_plot, nb_iter_max, interval=100, repeat_delay=2000
+)

@@ -1,0 +1,11 @@
+extends: default
+
+ignore: |
+  .circleci/config.yml
+  codecov.yml
+  .github/labeler.yml
+
+rules:
+  line-length: disable
+  document-start: disable
+  indentation: disable

@@ -4,6 +4,9 @@ r"""
 Wasserstein 2 Minibatch GAN with PyTorch
 ========================================
 
+.. note::
+    Example added in release: 0.8.0.
+
 In this example we train a Wasserstein GAN using Wasserstein 2 on minibatches
 as a distribution fitting term.
 
@@ -19,13 +22,13 @@ optimization problem:
 
 
 In practice we do not have access to the full distribution :math:`\mu_d` but
-samples and we cannot compute the Wasserstein distance for lare dataset.
+samples and we cannot compute the Wasserstein distance for large dataset.
 [Arjovsky2017] proposed to approximate the dual potential of Wasserstein 1
 with a neural network recovering an optimization problem similar to GAN.
 In this example
 we will optimize the expectation of the Wasserstein distance over minibatches
 at each iterations as proposed in [Genevay2018]. Optimizing the Minibatches
-of the Wasserstein distance  has been studied in[Fatras2019].
+of the Wasserstein distance  has been studied in [Fatras2019].
 
 [Arjovsky2017] Arjovsky, M., Chintala, S., & Bottou, L. (2017, July).
 Wasserstein generative adversarial networks. In International conference
@@ -81,14 +84,15 @@ def get_data(n_samples):
 # plot the distributions
 x = get_data(500)
 pl.figure(1)
-pl.scatter(x[:, 0], x[:, 1], label='Data samples from $\mu_d$', alpha=0.5)
-pl.title('Data distribution')
+pl.scatter(x[:, 0], x[:, 1], label="Data samples from $\mu_d$", alpha=0.5)
+pl.title("Data distribution")
 pl.legend()
 
 
 # %%
 # Generator Model
 # ---------------
+
 
 # define the MLP model
 class Generator(torch.nn.Module):
@@ -106,6 +110,7 @@ class Generator(torch.nn.Module):
         output = self.relu(output)
         output = self.fc3(output)
         return output
+
 
 # %%
 # Training the model
@@ -129,7 +134,6 @@ losses = []
 
 
 for i in range(n_iter):
-
     # generate noise samples
     xn = torch.randn(size_batch, n_features)
 
@@ -139,7 +143,7 @@ for i in range(n_iter):
     # generate sample along iterations
     xvisu[i, :, :] = G(xnvisu).detach()
 
-    # generate smaples and compte distance matrix
+    # generate samples and compte distance matrix
     xg = G(xn)
     M = ot.dist(xg, xd)
 
@@ -151,13 +155,14 @@ for i in range(n_iter):
 
     loss.backward()
     optimizer.step()
+    optimizer.zero_grad()
 
     del M
 
 pl.figure(2)
 pl.semilogy(losses)
 pl.grid()
-pl.title('Wasserstein distance')
+pl.title("Wasserstein distance")
 pl.xlabel("Iterations")
 
 
@@ -172,44 +177,55 @@ ivisu = [0, 10, 25, 50, 75, 125, 15, 175, 199]
 
 for i in range(9):
     pl.subplot(3, 3, i + 1)
-    pl.scatter(xd[:, 0], xd[:, 1], label='Data samples from $\mu_d$', alpha=0.1)
-    pl.scatter(xvisu[ivisu[i], :, 0], xvisu[ivisu[i], :, 1], label='Data samples from $G\#\mu_n$', alpha=0.5)
+    pl.scatter(xd[:, 0], xd[:, 1], label="Data samples from $\mu_d$", alpha=0.1)
+    pl.scatter(
+        xvisu[ivisu[i], :, 0],
+        xvisu[ivisu[i], :, 1],
+        label="Data samples from $G\#\mu_n$",
+        alpha=0.5,
+    )
     pl.xticks(())
     pl.yticks(())
-    pl.title('Iter. {}'.format(ivisu[i]))
+    pl.title("Iter. {}".format(ivisu[i]))
     if i == 0:
         pl.legend()
 
 # %%
 # Animate trajectories of generated samples along iteration
-# -------------------------------------------------------
+# ---------------------------------------------------------
 
 pl.figure(4, (8, 8))
 
 
 def _update_plot(i):
     pl.clf()
-    pl.scatter(xd[:, 0], xd[:, 1], label='Data samples from $\mu_d$', alpha=0.1)
-    pl.scatter(xvisu[i, :, 0], xvisu[i, :, 1], label='Data samples from $G\#\mu_n$', alpha=0.5)
+    pl.scatter(xd[:, 0], xd[:, 1], label="Data samples from $\mu_d$", alpha=0.1)
+    pl.scatter(
+        xvisu[i, :, 0], xvisu[i, :, 1], label="Data samples from $G\#\mu_n$", alpha=0.5
+    )
     pl.xticks(())
     pl.yticks(())
     pl.xlim((-1.5, 1.5))
     pl.ylim((-1.5, 1.5))
-    pl.title('Iter. {}'.format(i))
+    pl.title("Iter. {}".format(i))
     return 1
 
 
 i = 0
-pl.scatter(xd[:, 0], xd[:, 1], label='Data samples from $\mu_d$', alpha=0.1)
-pl.scatter(xvisu[i, :, 0], xvisu[i, :, 1], label='Data samples from $G\#\mu_n$', alpha=0.5)
+pl.scatter(xd[:, 0], xd[:, 1], label="Data samples from $\mu_d$", alpha=0.1)
+pl.scatter(
+    xvisu[i, :, 0], xvisu[i, :, 1], label="Data samples from $G\#\mu_n$", alpha=0.5
+)
 pl.xticks(())
 pl.yticks(())
 pl.xlim((-1.5, 1.5))
 pl.ylim((-1.5, 1.5))
-pl.title('Iter. {}'.format(ivisu[i]))
+pl.title("Iter. {}".format(ivisu[i]))
 
 
-ani = animation.FuncAnimation(pl.gcf(), _update_plot, n_iter, interval=100, repeat_delay=2000)
+ani = animation.FuncAnimation(
+    pl.gcf(), _update_plot, n_iter, interval=100, repeat_delay=2000
+)
 
 # %%
 # Generate and visualize data
@@ -221,7 +237,7 @@ xn = torch.randn(size_batch, 2)
 x = G(xn).detach().numpy()
 
 pl.figure(5)
-pl.scatter(xd[:, 0], xd[:, 1], label='Data samples from $\mu_d$', alpha=0.5)
-pl.scatter(x[:, 0], x[:, 1], label='Data samples from $G\#\mu_n$', alpha=0.5)
-pl.title('Sources and Target distributions')
+pl.scatter(xd[:, 0], xd[:, 1], label="Data samples from $\mu_d$", alpha=0.5)
+pl.scatter(x[:, 0], x[:, 1], label="Data samples from $G\#\mu_n$", alpha=0.5)
+pl.title("Sources and Target distributions")
 pl.legend()

@@ -1,24 +1,25 @@
-"""Tests for backend module """
+"""Tests for backend module"""
 
 # Author: Remi Flamary <remi.flamary@polytechnique.edu>
 #         Nicolas Courty <ncourty@irisa.fr>
 #
+#
 # License: MIT License
+
+import importlib.util
+import subprocess
+import sys
+
+import numpy as np
+import pytest
+from numpy.testing import assert_array_almost_equal_nulp
 
 import ot
 import ot.backend
-from ot.backend import torch, jax, cp, tf
-
-import pytest
-
-import numpy as np
-from numpy.testing import assert_array_almost_equal_nulp
-
-from ot.backend import get_backend, get_backend_list, to_numpy
+from ot.backend import get_backend, get_backend_list, jax, tf, to_numpy, torch
 
 
 def test_get_backend_list():
-
     lst = get_backend_list()
 
     assert len(lst) > 0
@@ -26,7 +27,6 @@ def test_get_backend_list():
 
 
 def test_to_numpy(nx):
-
     v = nx.zeros(10)
     M = nx.ones((10, 10))
 
@@ -37,17 +37,7 @@ def test_to_numpy(nx):
     assert isinstance(M2, np.ndarray)
 
 
-def test_get_backend():
-
-    A = np.zeros((3, 2))
-    B = np.zeros((3, 1))
-
-    nx = get_backend(A)
-    assert nx.__name__ == 'numpy'
-
-    nx = get_backend(A, B)
-    assert nx.__name__ == 'numpy'
-
+def test_get_backend_invalid():
     # error if no parameters
     with pytest.raises(ValueError):
         get_backend()
@@ -56,68 +46,82 @@ def test_get_backend():
     with pytest.raises(ValueError):
         get_backend(1, 2.0)
 
-    # test torch
+
+def test_get_backend(nx):
+    A = np.zeros((3, 2))
+    B = np.zeros((3, 1))
+
+    nx_np = get_backend(A)
+    assert nx_np.__name__ == "numpy"
+
+    A2, B2 = nx.from_numpy(A, B)
+
+    effective_nx = get_backend(A2)
+    assert effective_nx.__name__ == nx.__name__
+
+    effective_nx = get_backend(A2, B2)
+    assert effective_nx.__name__ == nx.__name__
+
+    if nx.__name__ != "numpy":
+        # test that types mathcing different backends in input raise an error
+        with pytest.raises(ValueError):
+            get_backend(A, B2)
+    else:
+        # Check that subclassing a numpy array does not break get_backend
+        # note: This is only tested for numpy as this is hard to be consistent
+        # with other backends
+        class nx_subclass(nx.__type__):
+            pass
+
+        A3 = nx_subclass(0)
+
+        effective_nx = get_backend(A3, B2)
+        assert effective_nx.__name__ == nx.__name__
+
+
+def test_get_backend_sparse_matrix():
+    """Test that get_backend correctly handles sparse matrices and rejects mixed backends."""
+    from scipy.sparse import coo_matrix
+
+    a_np = np.array([0.5, 0.5])
+    b_np = np.array([0.5, 0.5])
+    M_scipy = coo_matrix(([1.0, 2.0], ([0, 1], [0, 1])), shape=(2, 2))
+
+    nx = get_backend(a_np, b_np, M_scipy)
+    assert nx.__name__ == "numpy", "NumPy backend should accept scipy.sparse matrices"
+
+    nx = get_backend(M_scipy)
+    assert nx.__name__ == "numpy", "scipy.sparse should use NumPy backend"
+
     if torch:
+        a_torch = torch.tensor([0.5, 0.5])
+        b_torch = torch.tensor([0.5, 0.5])
+        M_torch_sparse = torch.sparse_coo_tensor(
+            torch.tensor([[0, 1], [0, 1]]), torch.tensor([1.0, 2.0]), (2, 2)
+        )
 
-        A2 = torch.from_numpy(A)
-        B2 = torch.from_numpy(B)
+        nx = get_backend(a_torch, b_torch, M_torch_sparse)
+        assert (
+            nx.__name__ == "torch"
+        ), "PyTorch backend should accept torch.sparse tensors"
 
-        nx = get_backend(A2)
-        assert nx.__name__ == 'torch'
+        nx = get_backend(M_torch_sparse)
+        assert nx.__name__ == "torch", "torch.sparse should use PyTorch backend"
 
-        nx = get_backend(A2, B2)
-        assert nx.__name__ == 'torch'
-
-        # test not unique types in input
+        # Case 1: PyTorch dense + scipy.sparse (incompatible)
         with pytest.raises(ValueError):
-            get_backend(A, B2)
+            get_backend(a_torch, b_torch, M_scipy)
 
-    if jax:
-
-        A2 = jax.numpy.array(A)
-        B2 = jax.numpy.array(B)
-
-        nx = get_backend(A2)
-        assert nx.__name__ == 'jax'
-
-        nx = get_backend(A2, B2)
-        assert nx.__name__ == 'jax'
-
-        # test not unique types in input
+        # Case 2: NumPy dense + torch.sparse (incompatible)
         with pytest.raises(ValueError):
-            get_backend(A, B2)
+            get_backend(a_np, b_np, M_torch_sparse)
 
-    if cp:
-        A2 = cp.asarray(A)
-        B2 = cp.asarray(B)
-
-        nx = get_backend(A2)
-        assert nx.__name__ == 'cupy'
-
-        nx = get_backend(A2, B2)
-        assert nx.__name__ == 'cupy'
-
-        # test not unique types in input
+        # Case 3: scipy.sparse + torch.sparse (incompatible)
         with pytest.raises(ValueError):
-            get_backend(A, B2)
-
-    if tf:
-        A2 = tf.convert_to_tensor(A)
-        B2 = tf.convert_to_tensor(B)
-
-        nx = get_backend(A2)
-        assert nx.__name__ == 'tf'
-
-        nx = get_backend(A2, B2)
-        assert nx.__name__ == 'tf'
-
-        # test not unique types in input
-        with pytest.raises(ValueError):
-            get_backend(A, B2)
+            get_backend(M_scipy, M_torch_sparse)
 
 
 def test_convert_between_backends(nx):
-
     A = np.zeros((3, 2))
     B = np.zeros((3, 1))
 
@@ -136,10 +140,10 @@ def test_convert_between_backends(nx):
 
 
 def test_empty_backend():
-
     rnd = np.random.RandomState(0)
     M = rnd.randn(10, 3)
     v = rnd.randn(3)
+    inds = rnd.randint(10)
 
     nx = ot.backend.Backend()
 
@@ -174,6 +178,10 @@ def test_empty_backend():
     with pytest.raises(NotImplementedError):
         nx.abs(M)
     with pytest.raises(NotImplementedError):
+        nx.sin(M)
+    with pytest.raises(NotImplementedError):
+        nx.cos(M)
+    with pytest.raises(NotImplementedError):
         nx.log(M)
     with pytest.raises(NotImplementedError):
         nx.exp(M)
@@ -194,7 +202,7 @@ def test_empty_backend():
     with pytest.raises(NotImplementedError):
         nx.isinf(M)
     with pytest.raises(NotImplementedError):
-        nx.einsum('ij->i', M)
+        nx.einsum("ij->i", M)
     with pytest.raises(NotImplementedError):
         nx.sort(M)
     with pytest.raises(NotImplementedError):
@@ -218,7 +226,11 @@ def test_empty_backend():
     with pytest.raises(NotImplementedError):
         nx.argmax(M)
     with pytest.raises(NotImplementedError):
+        nx.argmin(M)
+    with pytest.raises(NotImplementedError):
         nx.mean(M)
+    with pytest.raises(NotImplementedError):
+        nx.median(M)
     with pytest.raises(NotImplementedError):
         nx.std(M)
     with pytest.raises(NotImplementedError):
@@ -240,6 +252,8 @@ def test_empty_backend():
     with pytest.raises(NotImplementedError):
         nx.rand()
     with pytest.raises(NotImplementedError):
+        nx.randperm(12)
+    with pytest.raises(NotImplementedError):
         nx.randn()
         nx.coo_matrix(M, M, M)
     with pytest.raises(NotImplementedError):
@@ -255,6 +269,8 @@ def test_empty_backend():
     with pytest.raises(NotImplementedError):
         nx.copy(M)
     with pytest.raises(NotImplementedError):
+        nx.pinv(M)
+    with pytest.raises(NotImplementedError):
         nx.allclose(M, M)
     with pytest.raises(NotImplementedError):
         nx.squeeze(M)
@@ -264,31 +280,90 @@ def test_empty_backend():
         nx.device_type(M)
     with pytest.raises(NotImplementedError):
         nx._bench(lambda x: x, M, n_runs=1)
+    with pytest.raises(NotImplementedError):
+        nx.solve(M, v)
+    with pytest.raises(NotImplementedError):
+        nx.trace(M)
+    with pytest.raises(NotImplementedError):
+        nx.inv(M)
+    with pytest.raises(NotImplementedError):
+        nx.sqrtm(M)
+    with pytest.raises(NotImplementedError):
+        nx.kl_div(M, M)
+    with pytest.raises(NotImplementedError):
+        nx.isfinite(M)
+    with pytest.raises(NotImplementedError):
+        nx.array_equal(M, M)
+    with pytest.raises(NotImplementedError):
+        nx.is_floating_point(M)
+    with pytest.raises(NotImplementedError):
+        nx.tile(M, (10, 1))
+    with pytest.raises(NotImplementedError):
+        nx.floor(M)
+    with pytest.raises(NotImplementedError):
+        nx.prod(M)
+    with pytest.raises(NotImplementedError):
+        nx.sort2(M)
+    with pytest.raises(NotImplementedError):
+        nx.qr(M)
+    with pytest.raises(NotImplementedError):
+        nx.atan2(v, v)
+    with pytest.raises(NotImplementedError):
+        nx.transpose(M)
+    with pytest.raises(NotImplementedError):
+        nx.detach(M)
+    with pytest.raises(NotImplementedError):
+        nx.matmul(M, M.T)
+    with pytest.raises(NotImplementedError):
+        nx.nan_to_num(M)
+    with pytest.raises(NotImplementedError):
+        nx.sign(M)
+    with pytest.raises(NotImplementedError):
+        nx.dtype_device(M)
+    with pytest.raises(NotImplementedError):
+        nx.assert_same_dtype_device(M, M)
+    with pytest.raises(NotImplementedError):
+        nx.eigh(M)
+    with pytest.raises(NotImplementedError):
+        nx.det(M)
+    with pytest.raises(NotImplementedError):
+        nx.slogdet(M)
+    with pytest.raises(NotImplementedError):
+        nx.unsqueeze(M, 0)
 
 
 def test_func_backends(nx):
-
     rnd = np.random.RandomState(0)
     M = rnd.randn(10, 3)
+    SquareM = rnd.randn(10, 10)
     v = rnd.randn(3)
     val = np.array([1.0])
+
+    M1 = rnd.randn(1, 2, 10, 10)
+    M2 = rnd.randn(3, 1, 10, 10)
 
     # Sparse tensors test
     sp_row = np.array([0, 3, 1, 0, 3])
     sp_col = np.array([0, 3, 1, 2, 2])
     sp_data = np.array([4, 5, 7, 9, 0], dtype=np.float64)
 
+    M_complex = M + 1j * rnd.randn(10, 3)
+    v_acos = np.clip(v, -0.99, 0.99)
+
     lst_tot = []
 
     for nx in [ot.backend.NumpyBackend(), nx]:
-
-        print('Backend: ', nx.__name__)
+        print("Backend: ", nx.__name__)
 
         lst_b = []
         lst_name = []
 
         Mb = nx.from_numpy(M)
+        SquareMb = nx.from_numpy(SquareM)
         vb = nx.from_numpy(v)
+
+        M1b = nx.from_numpy(M1)
+        M2b = nx.from_numpy(M2)
 
         val = nx.from_numpy(val)
 
@@ -299,247 +374,299 @@ def test_func_backends(nx):
         A = nx.set_gradients(val, v, v)
 
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('set_gradients')
+        lst_name.append("set_gradients")
+
+        A = nx.detach(Mb)
+        A, B = nx.detach(Mb, Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("detach")
 
         A = nx.zeros((10, 3))
         A = nx.zeros((10, 3), type_as=Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('zeros')
+        lst_name.append("zeros")
 
         A = nx.ones((10, 3))
         A = nx.ones((10, 3), type_as=Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('ones')
+        lst_name.append("ones")
 
         A = nx.arange(10, 1, 2)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('arange')
+        lst_name.append("arange")
 
         A = nx.full((10, 3), 3.14)
         A = nx.full((10, 3), 3.14, type_as=Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('full')
+        lst_name.append("full")
 
         A = nx.eye(10, 3)
         A = nx.eye(10, 3, type_as=Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('eye')
+        lst_name.append("eye")
 
         A = nx.sum(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('sum')
+        lst_name.append("sum")
 
         A = nx.sum(Mb, axis=1, keepdims=True)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('sum(axis)')
+        lst_name.append("sum(axis)")
 
         A = nx.cumsum(Mb, 0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('cumsum(axis)')
+        lst_name.append("cumsum(axis)")
 
         A = nx.max(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('max')
+        lst_name.append("max")
 
         A = nx.max(Mb, axis=1, keepdims=True)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('max(axis)')
+        lst_name.append("max(axis)")
 
         A = nx.min(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('min')
+        lst_name.append("min")
 
         A = nx.min(Mb, axis=1, keepdims=True)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('min(axis)')
+        lst_name.append("min(axis)")
 
         A = nx.maximum(vb, 0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('maximum')
+        lst_name.append("maximum")
 
         A = nx.minimum(vb, 0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('minimum')
+        lst_name.append("minimum")
+
+        A = nx.sign(vb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("sign")
 
         A = nx.abs(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('abs')
+        lst_name.append("abs")
+
+        A = nx.sin(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("sin")
+
+        A = nx.cos(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("cos")
 
         A = nx.log(A)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('log')
+        lst_name.append("log")
 
         A = nx.exp(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('exp')
+        lst_name.append("exp")
 
         A = nx.sqrt(nx.abs(Mb))
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('sqrt')
+        lst_name.append("sqrt")
 
         A = nx.power(Mb, 2)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('power')
+        lst_name.append("power")
 
         A = nx.dot(vb, vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('dot(v,v)')
+        lst_name.append("dot(v,v)")
 
         A = nx.dot(Mb, vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('dot(M,v)')
+        lst_name.append("dot(M,v)")
 
         A = nx.dot(Mb, Mb.T)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('dot(M,M)')
+        lst_name.append("dot(M,M)")
 
         A = nx.norm(vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('norm')
+        lst_name.append("norm")
+
+        A = nx.norm(Mb, axis=1)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("norm(M,axis=1)")
+
+        A = nx.norm(Mb, axis=1, keepdims=True)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("norm(M,axis=1,keepdims=True)")
 
         A = nx.any(vb > 0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('any')
+        lst_name.append("any")
 
         A = nx.isnan(vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('isnan')
+        lst_name.append("isnan")
 
         A = nx.isinf(vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('isinf')
+        lst_name.append("isinf")
 
-        A = nx.einsum('ij->i', Mb)
+        A = nx.einsum("ij->i", Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('einsum(ij->i)')
+        lst_name.append("einsum(ij->i)")
 
-        A = nx.einsum('ij,j->i', Mb, vb)
+        A = nx.einsum("ij,j->i", Mb, vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('nx.einsum(ij,j->i)')
+        lst_name.append("nx.einsum(ij,j->i)")
 
-        A = nx.einsum('ij->i', Mb)
+        A = nx.einsum("ij->i", Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('nx.einsum(ij->i)')
+        lst_name.append("nx.einsum(ij->i)")
 
         A = nx.sort(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('sort')
+        lst_name.append("sort")
 
         A = nx.argsort(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('argsort')
+        lst_name.append("argsort")
 
         tmp = nx.sort(Mb)
-        A = nx.searchsorted(tmp, tmp, 'right')
+        A = nx.searchsorted(tmp, tmp, "right")
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('searchsorted')
+        lst_name.append("searchsorted")
 
         A = nx.flip(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('flip')
+        lst_name.append("flip")
 
         A = nx.outer(vb, vb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('outer')
+        lst_name.append("outer")
 
         A = nx.clip(vb, 0, 1)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('clip')
+        lst_name.append("clip")
 
         A = nx.repeat(Mb, 0)
         A = nx.repeat(Mb, 2, -1)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('repeat')
+        lst_name.append("repeat")
 
         A = nx.take_along_axis(vb, nx.arange(3), -1)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('take_along_axis')
+        lst_name.append("take_along_axis")
 
         A = nx.concatenate((Mb, Mb), -1)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('concatenate')
+        lst_name.append("concatenate")
 
         A = nx.zero_pad(Mb, len(Mb.shape) * [(3, 3)])
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('zero_pad')
+        lst_name.append("zero_pad")
 
         A = nx.argmax(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('argmax')
+        lst_name.append("argmax")
+
+        A = nx.argmin(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("argmin")
 
         A = nx.mean(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('mean')
+        lst_name.append("mean")
+
+        A = nx.median(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("median")
 
         A = nx.std(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('std')
+        lst_name.append("std")
 
         A = nx.linspace(0, 1, 50)
+        A = nx.linspace(0, 1, 50, type_as=Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('linspace')
+        lst_name.append("linspace")
 
         X, Y = nx.meshgrid(vb, vb)
         lst_b.append(np.stack([nx.to_numpy(X), nx.to_numpy(Y)]))
-        lst_name.append('meshgrid')
+        lst_name.append("meshgrid")
 
         A = nx.diag(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('diag2D')
+        lst_name.append("diag2D")
 
         A = nx.diag(vb, 1)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('diag1D')
+        lst_name.append("diag1D")
 
         A = nx.unique(nx.from_numpy(np.stack([M, M])))
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('unique')
+        lst_name.append("unique")
+
+        A, A2 = nx.unique(
+            nx.from_numpy(np.stack([M, M]).reshape(-1)), return_inverse=True
+        )
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("unique(M,return_inverse=True)[0]")
+        lst_b.append(nx.to_numpy(A2))
+        lst_name.append("unique(M,return_inverse=True)[1]")
 
         A = nx.logsumexp(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('logsumexp')
+        lst_name.append("logsumexp")
 
         A = nx.stack([Mb, Mb])
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('stack')
+        lst_name.append("stack")
 
         A = nx.reshape(Mb, (5, 3, 2))
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('reshape')
+        lst_name.append("reshape")
 
         sp_Mb = nx.coo_matrix(sp_datab, sp_rowb, sp_colb, shape=(4, 4))
         nx.todense(Mb)
         lst_b.append(nx.to_numpy(nx.todense(sp_Mb)))
-        lst_name.append('coo_matrix')
+        lst_name.append("coo_matrix")
 
-        assert not nx.issparse(Mb), 'Assert fail on: issparse (expected False)'
-        assert nx.issparse(sp_Mb) or nx.__name__ in ("jax", "tf"), 'Assert fail on: issparse (expected True)'
+        assert not nx.issparse(Mb), "Assert fail on: issparse (expected False)"
+        assert nx.issparse(sp_Mb) or nx.__name__ in (
+            "jax",
+            "tf",
+        ), "Assert fail on: issparse (expected True)"
 
         A = nx.tocsr(sp_Mb)
         lst_b.append(nx.to_numpy(nx.todense(A)))
-        lst_name.append('tocsr')
+        lst_name.append("tocsr")
 
-        A = nx.eliminate_zeros(nx.copy(sp_datab), threshold=5.)
+        A = nx.eliminate_zeros(nx.copy(sp_datab), threshold=5.0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('eliminate_zeros (dense)')
+        lst_name.append("eliminate_zeros (dense)")
 
         A = nx.eliminate_zeros(sp_Mb)
         lst_b.append(nx.to_numpy(nx.todense(A)))
-        lst_name.append('eliminate_zeros (sparse)')
+        lst_name.append("eliminate_zeros (sparse)")
 
         A = nx.where(Mb >= nx.stack([nx.linspace(0, 1, 10)] * 3, axis=1), Mb, 0.0)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('where')
+        lst_name.append("where (cond, x, y)")
+
+        A = nx.where(nx.from_numpy(np.array([True, False])))
+        lst_b.append(nx.to_numpy(nx.stack(A)))
+        lst_name.append("where (cond)")
 
         A = nx.copy(Mb)
         lst_b.append(nx.to_numpy(A))
-        lst_name.append('copy')
+        lst_name.append("copy")
 
-        assert nx.allclose(Mb, Mb), 'Assert fail on: allclose (expected True)'
-        assert not nx.allclose(2 * Mb, Mb), 'Assert fail on: allclose (expected False)'
+        assert nx.allclose(Mb, Mb), "Assert fail on: allclose (expected True)"
+        assert not nx.allclose(2 * Mb, Mb), "Assert fail on: allclose (expected False)"
 
         A = nx.squeeze(nx.zeros((3, 1, 4, 1)))
-        assert tuple(A.shape) == (3, 4), 'Assert fail on: squeeze'
+        assert tuple(A.shape) == (3, 4), "Assert fail on: squeeze"
+
+        A = nx.unsqueeze(nx.zeros((3, 1, 4)), -1)
+        assert tuple(A.shape) == (3, 1, 4, 1), "Assert fail on: unsqueeze"
 
         A = nx.bitsize(Mb)
         lst_b.append(float(A))
@@ -550,19 +677,143 @@ def test_func_backends(nx):
 
         nx._bench(lambda x: x, M, n_runs=1)
 
+        A = nx.solve(SquareMb, Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("solve")
+
+        A = nx.trace(SquareMb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("trace")
+
+        A = nx.trace(nx.stack([SquareMb, SquareMb], axis=0))
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("broadcast trace")
+
+        A = nx.inv(SquareMb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("matrix inverse")
+
+        A = nx.sqrtm(SquareMb.T @ SquareMb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("matrix square root")
+
+        A = nx.sqrtm(nx.stack([SquareMb.T @ SquareMb] * 2, axis=0))[None, :]
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("broadcast matrix square root")
+
+        D, U = nx.eigh(SquareMb.T @ SquareMb)
+        lst_b.append(nx.to_numpy(nx.dot(U, nx.dot(nx.diag(D), U.T))))
+        lst_name.append("eigh ")
+
+        A = nx.kl_div(nx.abs(Mb), nx.abs(Mb) + 1)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("Kullback-Leibler divergence")
+
+        A = nx.concatenate([vb, nx.from_numpy(np.array([np.inf, np.nan]))], axis=0)
+        A = nx.isfinite(A)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("isfinite")
+
+        A = nx.tile(vb, (10, 1))
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("tile")
+
+        A = nx.floor(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("floor")
+
+        A = nx.prod(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("prod")
+
+        A, B = nx.sort2(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("sort2 sort")
+        lst_b.append(nx.to_numpy(B))
+        lst_name.append("sort2 argsort")
+
+        A, B = nx.qr(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("QR Q")
+        lst_b.append(nx.to_numpy(B))
+        lst_name.append("QR R")
+
+        A = nx.atan2(vb, vb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("atan2")
+
+        M_complex_b = nx.from_numpy(M_complex)
+        A = nx.real(M_complex_b)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("real")
+
+        A = nx.imag(M_complex_b)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("imag")
+
+        A = nx.conj(M_complex_b)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("conj")
+
+        v_acos_b = nx.from_numpy(v_acos)
+        A = nx.arccos(v_acos_b)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("arccos")
+
+        A = nx.transpose(Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("transpose")
+
+        A, B = nx.detach(Mb, Mb)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("detach A")
+        lst_b.append(nx.to_numpy(B))
+        lst_name.append("detach B")
+
+        A = nx.matmul(Mb, Mb.T)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("matmul")
+        A = nx.matmul(M1b, M2b)
+        lst_b.append(nx.to_numpy(A))
+        lst_name.append("matmul broadcast")
+
+        vec = nx.from_numpy(np.array([1, np.nan, -1]))
+        vec = nx.nan_to_num(vec, nan=0)
+        lst_b.append(nx.to_numpy(vec))
+        lst_name.append("nan_to_num")
+
+        d = nx.det(M1b)
+        lst_b.append(nx.to_numpy(d))
+        lst_name.append("det")
+
+        s, logabsd = nx.slogdet(M1b)
+        s, logabsd = nx.to_numpy(s), nx.to_numpy(logabsd)
+        lst_b.append(np.array([s, logabsd]))
+        lst_name.append("slogdet")
+
+        assert not nx.array_equal(Mb, vb), "array_equal (shape)"
+        assert nx.array_equal(Mb, Mb), "array_equal (elements) - expected true"
+        assert not nx.array_equal(
+            Mb, Mb + nx.eye(*list(Mb.shape))
+        ), "array_equal (elements) - expected false"
+
+        assert nx.is_floating_point(Mb), "is_floating_point - expected true"
+        assert not nx.is_floating_point(
+            nx.from_numpy(np.array([0, 1, 2], dtype=int))
+        ), "is_floating_point - expected false"
+
         lst_tot.append(lst_b)
 
     lst_np = lst_tot[0]
     lst_b = lst_tot[1]
 
     for a1, a2, name in zip(lst_np, lst_b, lst_name):
-        if not np.allclose(a1, a2):
-            print('Assert fail on: ', name)
-        assert np.allclose(a1, a2, atol=1e-7)
+        np.testing.assert_allclose(
+            a2, a1, atol=1e-7, err_msg=f"ASSERT FAILED ON: {name}"
+        )
 
 
 def test_random_backends(nx):
-
     tmp_u = nx.rand()
 
     assert tmp_u < 1
@@ -589,16 +840,25 @@ def test_random_backends(nx):
     v2 = nx.randn()
     assert v1 != v2
 
+    nx.seed(0)
+    M1 = nx.to_numpy(nx.randperm(5))
+    nx.seed(0)
+    M2 = nx.to_numpy(nx.randperm(5, type_as=tmp_u))
+    M3 = nx.arange(5)
+    M4 = nx.sort(nx.randperm(5))
+    assert np.allclose(M3, M4)
+
+    with pytest.raises(ValueError, match="size must be"):
+        res = nx.randperm(size=[5, 12])
+
 
 def test_gradients_backends():
-
     rnd = np.random.RandomState(0)
     v = rnd.randn(10)
     c = rnd.randn()
     e = rnd.randn()
 
     if torch:
-
         nx = ot.backend.TorchBackend()
 
         v2 = torch.tensor(v, requires_grad=True)
@@ -616,25 +876,109 @@ def test_gradients_backends():
     if jax:
         nx = ot.backend.JaxBackend()
         with jax.checking_leaks():
+
             def fun(a, b, d):
-                val = b * nx.sum(a ** 4) + d
+                val = b * nx.sum(a**4) + d
                 return nx.set_gradients(val, (a, b, d), (a, b, 2 * d))
+
             grad_val = jax.grad(fun, argnums=(0, 1, 2))(v, c, e)
 
-        np.testing.assert_almost_equal(fun(v, c, e), c * np.sum(v ** 4) + e, decimal=4)
+        np.testing.assert_almost_equal(fun(v, c, e), c * np.sum(v**4) + e, decimal=4)
         np.testing.assert_allclose(grad_val[0], v, atol=1e-4)
         np.testing.assert_allclose(grad_val[2], 2 * e, atol=1e-4)
 
+        with jax.checking_leaks():
+
+            def f(x):
+                return nx.sum(nx.abs(x))
+
+            grad_val = jax.grad(f)(nx.zeros((3,)))
+
+        np.testing.assert_allclose(grad_val, nx.zeros((3,)))
+
     if tf:
         nx = ot.backend.TensorflowBackend()
-        w = tf.Variable(tf.random.normal((3, 2)), name='w')
-        b = tf.Variable(tf.random.normal((2,), dtype=tf.float32), name='b')
+        w = tf.Variable(tf.random.normal((3, 2)), name="w")
+        b = tf.Variable(tf.random.normal((2,), dtype=tf.float32), name="b")
         x = tf.random.normal((1, 3), dtype=tf.float32)
 
         with tf.GradientTape() as tape:
             y = x @ w + b
-            loss = tf.reduce_mean(y ** 2)
+            loss = tf.reduce_mean(y**2)
             manipulated_loss = nx.set_gradients(loss, (w, b), (w, b))
             [dl_dw, dl_db] = tape.gradient(manipulated_loss, [w, b])
             assert nx.allclose(dl_dw, w)
             assert nx.allclose(dl_db, b)
+
+
+def test_sqrtm_backward_torch():
+    if not torch:
+        pytest.skip("Torch not available")
+    nx = ot.backend.TorchBackend()
+    torch.manual_seed(42)
+    d = 5
+    A = torch.randn(d, d, dtype=torch.float64, device="cpu")
+    A = A @ A.T
+    A.requires_grad_(True)
+    func = lambda x: nx.sqrtm(x).sum()
+    assert torch.autograd.gradcheck(func, (A,), atol=1e-4, rtol=1e-4)
+
+
+def test_get_backend_none():
+    a, b = np.zeros((2, 3)), None
+    nx = get_backend(a, b)
+    assert str(nx) == "numpy"
+    with pytest.raises(ValueError):
+        get_backend(None, None)
+
+
+@pytest.mark.skipif(
+    not torch or not tf or importlib.util.find_spec("triton") is None,
+    reason="Requires torch, tensorflow and triton installed together",
+)
+def test_torch_optimizer_after_tensorflow_import():
+    """Non-regression test for issue #816.
+
+    Building a torch optimizer makes torch import triton lazily. If TensorFlow
+    was imported first, loading libtriton.so segfaults the interpreter, so this
+    has to run in a subprocess.
+    """
+    code = (
+        "import ot.backend\n"
+        "import torch\n"
+        "x = torch.zeros(3, requires_grad=True)\n"
+        "torch.optim.SGD([x], lr=0.1)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    assert result.returncode == 0, (
+        f"interpreter died with returncode {result.returncode}: "
+        f"{result.stderr.decode(errors='replace')[-2000:]}"
+    )
+
+
+@pytest.mark.skipif(
+    not torch or not torch.cuda.is_available(),
+    reason="Requires torch with CUDA available",
+)
+def test_no_cuda_context_for_cpu_only_work():
+    """Non-regression test for issue #612.
+
+    Building the torch backend used to create a CUDA generator and the CUDA
+    entries of the type list straight away. That initialises a CUDA context, so
+    device memory is claimed and the GPU wakes up for a computation that stays
+    entirely on the CPU. The check needs an interpreter that has not touched
+    CUDA yet, so it runs in a subprocess.
+    """
+    code = (
+        "import torch\n"
+        "import ot\n"
+        "x = torch.randn(64, 2)\n"
+        "ot.dist(x, x)\n"
+        "assert not torch.cuda.is_initialized(), 'a CUDA context was created'\n"
+        "assert torch.cuda.memory_allocated() == 0, 'device memory was claimed'\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True)
+    assert result.returncode == 0, (
+        f"interpreter exited with returncode {result.returncode}: "
+        f"{result.stderr.decode(errors='replace')[-2000:]}"
+    )

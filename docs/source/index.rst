@@ -6,6 +6,10 @@
 POT: Python Optimal Transport
 =============================
 
+.. image:: _static/images/logo.svg
+  :width: 400
+  :alt: POT Logo
+
 Contents
 --------
 
@@ -13,12 +17,15 @@ Contents
    :maxdepth: 1
 
    self
-   quickstart
-   all
+   auto_examples/plot_quickstart_guide
    auto_examples/index
+   user_guide
+   all
    releases
-   .github/CONTRIBUTING
-   .github/CODE_OF_CONDUCT
+   contributors
+   contributing
+   code_of_conduct
+
 
 .. include:: ../../README.md
    :parser: myst_parser.sphinx_

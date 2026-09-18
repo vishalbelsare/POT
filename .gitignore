@@ -15,6 +15,8 @@ docs/modules/
 
 # Cython output
 ot/lp/emd_wrap.cpp
+ot/partial/partial_cython.cpp
+ot/bsp/bsp_wrap.cpp
 
 # Distribution / packaging
 .Python
@@ -97,6 +99,7 @@ celerybeat-schedule
 # virtualenv
 venv/
 ENV/
+.venv/
 
 # Spyder project settings
 .spyderproject
@@ -121,3 +124,5 @@ debug
 
 # pytest cahche
 .pytest_cache
+
+docs/source/

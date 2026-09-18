@@ -1,0 +1,79 @@
+
+
+## Creators and Maintainers 
+
+This toolbox has been created by [Rémi Flamary](https://remi.flamary.com/)
+and [Nicolas Courty](http://people.irisa.fr/Nicolas.Courty/).
+
+It is currently maintained by :
+
+* [Rémi Flamary](https://remi.flamary.com/)
+* [Cédric Vincent-Cuaz](https://cedricvincentcuaz.github.io/)
+
+## Contributors
+
+<a href="https://github.com/PythonOT/POT/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=PythonOT/POT" />
+</a>
+
+
+The contributors to this library are:
+
+* [Rémi Flamary](http://remi.flamary.com/) (EMD wrapper, Pytorch backend, DA
+  classes, conditional gradients, WDA, weak OT, linear OT mapping, documentation)
+* [Nicolas Courty](http://people.irisa.fr/Nicolas.Courty/) (Original sinkhorn,
+  Wasserstein barycenters and convolutional barycenters, 1D wasserstein)
+* [Alexandre Gramfort](http://alexandre.gramfort.net/) (CI, documentation)
+* [Laetitia Chapel](http://people.irisa.fr/Laetitia.Chapel/) (Partial OT,
+  Unbalanced OT non-regularized)
+* [Michael Perrot](http://perso.univ-st-etienne.fr/pem82055/) (Mapping estimation)
+* [Léo Gautheron](https://github.com/aje) (Initial GPU implementation)
+* [Nathalie Gayraud](https://www.linkedin.com/in/nathalie-t-h-gayraud/?ppe=1) (DA classes)
+* [Stanislas Chambon](https://slasnista.github.io/) (DA classes)
+* [Antoine Rolet](https://arolet.github.io/) (EMD solver debug)
+* Erwan Vautier (Gromov-Wasserstein)
+* [Kilian Fatras](https://kilianfatras.github.io/) (Stochastic solvers,
+  empirical sinkhorn)
+* [Alain Rakotomamonjy](https://sites.google.com/site/alainrakotomamonjy/home) (Greenkhorn)
+* [Vayer Titouan](https://tvayer.github.io/) (Gromov-Wasserstein, Fused-Gromov-Wasserstein)
+* [Hicham Janati](https://hichamjanati.github.io/) (Unbalanced OT, Debiased barycenters)
+* [Romain Tavenard](https://rtavenar.github.io/) (1D Wasserstein)
+* [Mokhtar Z. Alaya](http://mzalaya.github.io/) (Screenkhorn)
+* [Ievgen Redko](https://ievred.github.io/) (Laplacian DA, JCPOT)
+* [Adrien Corenflos](https://adriencorenflos.github.io/) (Sliced Wasserstein Distance)
+* [Tanguy Kerdoncuff](https://hv0nnus.github.io/) (Sampled Gromov Wasserstein)
+* [Minhui Huang](https://mhhuang95.github.io) (Projection Robust Wasserstein Distance)
+* [Nathan Cassereau](https://github.com/ncassereau-idris) (Backends)
+* [Cédric Vincent-Cuaz](https://github.com/cedricvincentcuaz) (Graph Dictionary Learning, FGW,
+  semi-relaxed FGW, quantized FGW, partial FGW)
+* [Eloi Tanguy](https://github.com/eloitanguy) (Generalized Wasserstein
+  Barycenters, GMMOT, Barycenters for General Transport Costs)
+* [Camille Le Coz](https://www.linkedin.com/in/camille-le-coz-8593b91a1/) (EMD2 debug)
+* [Eduardo Fernandes Montesuma](https://eddardd.github.io/my-personal-blog/) (Free support sinkhorn barycenter)
+* [Theo Gnassounou](https://github.com/tgnassou) (OT between Gaussian distributions)
+* [Clément Bonet](https://clbonet.github.io) (Wasserstein on circle, Spherical Sliced-Wasserstein)
+* [Ronak Mehta](https://ronakrm.github.io) (Efficient Discrete Multi Marginal Optimal Transport Regularization)
+* [Xizheng Yu](https://github.com/x12hengyu) (Efficient Discrete Multi Marginal Optimal Transport Regularization)
+* [Sonia Mazelet](https://github.com/SoniaMaz8) (Template based GNN layers)
+* [Laurène David](https://github.com/laudavid) (Low rank sinkhorn, Low rank Gromov-Wasserstein samples)
+* [Julie Delon](https://judelo.github.io/) (GMM OT)
+* [Samuel Boïté](https://samuelbx.github.io/) (GMM OT)
+* [Nathan Neike](https://github.com/nathanneike) (Sparse EMD solver)
+* [Thibaut Germain](https://thibaut-germain.github.io) (SGOT)
+* Sienna O'Shea (SGOT)
+* [Huy Tran](https://github.com/huytransformer) (Stereographic Spherical Sliced-Wasserstein)
+* [Samuel Vangu](https://github.com/Samuel-Vangu) (Quasi-Monte Carlo Sliced-Wasserstein)
+
+
+## Acknowledgments
+
+This toolbox benefit a lot from open source research and we would like to thank the following persons for providing some code (in various languages):
+
+* [Gabriel Peyré](http://gpeyre.github.io/) (Wasserstein Barycenters in Matlab)
+* [Mathieu Blondel](https://mblondel.org/) (original implementation smooth OT)
+* [Nicolas Bonneel](http://liris.cnrs.fr/~nbonneel/) (C++ code for EMD)
+* [Marco Cuturi](http://marcocuturi.net/) (Sinkhorn Knopp in Matlab/Cuda)
+
+POT has benefited from the financing or manpower from the following partners:
+
+<img src="https://pythonot.github.io/master/_static/images/logo_anr.jpg" alt="ANR" style="height:60px;"/><img src="https://pythonot.github.io/master/_static/images/logo_cnrs.jpg" alt="CNRS" style="height:60px;"/><img src="https://pythonot.github.io/master/_static/images/logo_3ia.jpg" alt="3IA" style="height:60px;"/><img src="https://pythonot.github.io/master/_static/images/logo_hiparis.png" alt="Hi!PARIS" style="height:60px;"/>

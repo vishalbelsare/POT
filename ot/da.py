@@ -8,26 +8,65 @@ Domain adaptation with optimal transport
 #         Michael Perrot <michael.perrot@univ-st-etienne.fr>
 #         Nathalie Gayraud <nat.gayraud@gmail.com>
 #         Ievgen Redko <ievgen.redko@univ-st-etienne.fr>
+#         Eloi Tanguy <eloi.tanguy@math.cnrs.fr>
 #
 # License: MIT License
 
 import numpy as np
-import scipy.linalg as linalg
+import warnings
 
+from .backend import get_backend
 from .bregman import sinkhorn, jcpot_barycenter
 from .lp import emd
-from .utils import unif, dist, kernel, cost_normalization, label_normalization, laplacian, dots
-from .utils import check_params, BaseEstimator
+from .utils import (
+    unif,
+    dist,
+    kernel,
+    cost_normalization,
+    label_normalization,
+    laplacian,
+    dots,
+)
+from .utils import (
+    BaseEstimator,
+    check_params,
+    deprecated,
+    labels_to_masks,
+    list_to_array,
+)
 from .unbalanced import sinkhorn_unbalanced
+from .gaussian import (
+    empirical_bures_wasserstein_mapping,
+    empirical_gaussian_gromov_wasserstein_mapping,
+)
 from .optim import cg
 from .optim import gcg
+from .mapping import (
+    nearest_brenier_potential_fit,
+    nearest_brenier_potential_predict_bounds,
+    joint_OT_mapping_linear,
+    joint_OT_mapping_kernel,
+)
+
+# value used in ys/yt to mark a sample whose label is unknown
+MISSING_LABEL = -1
 
 
-def sinkhorn_lpl1_mm(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
-                     numInnerItermax=200, stopInnerThr=1e-9, verbose=False,
-                     log=False):
+def sinkhorn_lpl1_mm(
+    a,
+    labels_a,
+    b,
+    M,
+    reg,
+    eta=0.1,
+    numItermax=10,
+    numInnerItermax=200,
+    stopInnerThr=1e-9,
+    verbose=False,
+    log=False,
+):
     r"""
-    Solve the entropic regularization optimal transport problem with nonconvex
+    Solve the entropic regularization optimal transport problem with non-convex
     group lasso regularization
 
     The function solves the following optimization problem:
@@ -60,13 +99,13 @@ def sinkhorn_lpl1_mm(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
 
     Parameters
     ----------
-    a : np.ndarray (ns,)
+    a : array-like (ns,)
         samples weights in the source domain
-    labels_a : np.ndarray (ns,)
+    labels_a : array-like (ns,)
         labels of samples in the source domain
-    b : np.ndarray (nt,)
+    b : array-like (nt,)
         samples weights in the target domain
-    M : np.ndarray (ns,nt)
+    M : array-like (ns,nt)
         loss matrix
     reg : float
         Regularization term for entropic regularization >0
@@ -86,7 +125,7 @@ def sinkhorn_lpl1_mm(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
 
     Returns
     -------
-    gamma : (ns, nt) ndarray
+    gamma : (ns, nt) array-like
         Optimal transportation matrix for the given parameters
     log : dict
         log dictionary return only if log==True in parameters
@@ -96,13 +135,13 @@ def sinkhorn_lpl1_mm(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
     References
     ----------
     .. [5] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-       "Optimal Transport for Domain Adaptation," in IEEE
-       Transactions on Pattern Analysis and Machine Intelligence ,
-       vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE
+        Transactions on Pattern Analysis and Machine Intelligence ,
+        vol.PP, no.99, pp.1-1
 
     .. [7] Rakotomamonjy, A., Flamary, R., & Courty, N. (2015).
-       Generalized conditional gradient: analysis of convergence
-       and applications. arXiv preprint arXiv:1510.06567.
+        Generalized conditional gradient: analysis of convergence
+        and applications. arXiv preprint arXiv:1510.06567.
 
     See Also
     --------
@@ -111,35 +150,63 @@ def sinkhorn_lpl1_mm(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
     ot.optim.cg : General regularized OT
 
     """
+    a, labels_a, b, M = list_to_array(a, labels_a, b, M)
+    nx = get_backend(a, labels_a, b, M)
+
     p = 0.5
     epsilon = 1e-3
 
-    indices_labels = []
-    classes = np.unique(labels_a)
-    for c in classes:
-        idxc, = np.where(labels_a == c)
-        indices_labels.append(idxc)
+    labels_u, labels_idx = nx.unique(labels_a, return_inverse=True)
+    n_labels = labels_u.shape[0]
+    unroll_labels_idx = nx.eye(n_labels, type_as=M)[labels_idx]
 
-    W = np.zeros(M.shape)
-
-    for cpt in range(numItermax):
+    W = nx.zeros(M.shape, type_as=M)
+    for _ in range(numItermax):
         Mreg = M + eta * W
-        transp = sinkhorn(a, b, Mreg, reg, numItermax=numInnerItermax,
-                          stopThr=stopInnerThr)
-        # the transport has been computed. Check if classes are really
-        # separated
-        W = np.ones(M.shape)
-        for (i, c) in enumerate(classes):
-            majs = np.sum(transp[indices_labels[i]], axis=0)
-            majs = p * ((majs + epsilon) ** (p - 1))
-            W[indices_labels[i]] = majs
+        if log:
+            transp, log = sinkhorn(
+                a,
+                b,
+                Mreg,
+                reg,
+                numItermax=numInnerItermax,
+                stopThr=stopInnerThr,
+                log=True,
+            )
+        else:
+            transp = sinkhorn(
+                a, b, Mreg, reg, numItermax=numInnerItermax, stopThr=stopInnerThr
+            )
+        # the transport has been computed
+        # check if classes are really separated
+        W = (
+            nx.repeat(transp.T[:, :, None], n_labels, axis=2)
+            * unroll_labels_idx[None, :, :]
+        )
+        W = nx.sum(W, axis=1)
+        W = nx.dot(W, unroll_labels_idx.T)
+        W = p * ((W.T + epsilon) ** (p - 1))
 
-    return transp
+    if log:
+        return transp, log
+    else:
+        return transp
 
 
-def sinkhorn_l1l2_gl(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
-                     numInnerItermax=200, stopInnerThr=1e-9, verbose=False,
-                     log=False):
+def sinkhorn_l1l2_gl(
+    a,
+    labels_a,
+    b,
+    M,
+    reg,
+    eta=0.1,
+    numItermax=10,
+    numInnerItermax=200,
+    stopInnerThr=1e-9,
+    eps=1e-12,
+    verbose=False,
+    log=False,
+):
     r"""
     Solve the entropic regularization optimal transport problem with group
     lasso regularization
@@ -162,25 +229,25 @@ def sinkhorn_l1l2_gl(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
     - :math:`\mathbf{M}` is the (`ns`, `nt`) metric cost matrix
     - :math:`\Omega_e` is the entropic regularization term
       :math:`\Omega_e(\gamma)=\sum_{i,j} \gamma_{i,j}\log(\gamma_{i,j})`
-    - :math:`\Omega_g` is the group lasso regulaization term
+    - :math:`\Omega_g` is the group lasso regularization term
       :math:`\Omega_g(\gamma)=\sum_{i,c} \|\gamma_{i,\mathcal{I}_c}\|^2`
       where  :math:`\mathcal{I}_c` are the index of samples from class
       `c` in the source domain.
     - :math:`\mathbf{a}` and :math:`\mathbf{b}` are source and target weights (sum to 1)
 
-    The algorithm used for solving the problem is the generalised conditional
+    The algorithm used for solving the problem is the generalized conditional
     gradient as proposed in :ref:`[5, 7] <references-sinkhorn-l1l2-gl>`.
 
 
     Parameters
     ----------
-    a : np.ndarray (ns,)
+    a : array-like (ns,)
         samples weights in the source domain
-    labels_a : np.ndarray (ns,)
+    labels_a : array-like (ns,)
         labels of samples in the source domain
-    b : np.ndarray (nt,)
+    b : array-like (nt,)
         samples in the target domain
-    M : np.ndarray (ns,nt)
+    M : array-like (ns,nt)
         loss matrix
     reg : float
         Regularization term for entropic regularization >0
@@ -192,6 +259,8 @@ def sinkhorn_l1l2_gl(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
         Max number of iterations (inner sinkhorn solver)
     stopInnerThr : float, optional
         Stop threshold on error (inner sinkhorn solver) (>0)
+    eps: float, optional (default=1e-12)
+        Small value to avoid division by zero
     verbose : bool, optional
         Print information along iterations
     log : bool, optional
@@ -200,7 +269,7 @@ def sinkhorn_l1l2_gl(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
 
     Returns
     -------
-    gamma : (ns, nt) ndarray
+    gamma : (ns, nt) array-like
         Optimal transportation matrix for the given parameters
     log : dict
         log dictionary return only if log==True in parameters
@@ -210,560 +279,73 @@ def sinkhorn_l1l2_gl(a, labels_a, b, M, reg, eta=0.1, numItermax=10,
     References
     ----------
     .. [5] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-       "Optimal Transport for Domain Adaptation," in IEEE Transactions
-       on Pattern Analysis and Machine Intelligence , vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE Transactions
+        on Pattern Analysis and Machine Intelligence , vol.PP, no.99, pp.1-1
 
     .. [7] Rakotomamonjy, A., Flamary, R., & Courty, N. (2015).
-       Generalized conditional gradient: analysis of convergence and
-       applications. arXiv preprint arXiv:1510.06567.
+        Generalized conditional gradient: analysis of convergence and
+        applications. arXiv preprint arXiv:1510.06567.
 
     See Also
     --------
     ot.optim.gcg : Generalized conditional gradient for OT problems
 
     """
-    lstlab = np.unique(labels_a)
+    a, labels_a, b, M = list_to_array(a, labels_a, b, M)
+    nx = get_backend(a, labels_a, b, M)
+
+    labels_u, labels_idx = nx.unique(labels_a, return_inverse=True)
+    n_labels = labels_u.shape[0]
+    unroll_labels_idx = nx.eye(n_labels, type_as=labels_u)[None, labels_idx]
 
     def f(G):
-        res = 0
-        for i in range(G.shape[1]):
-            for lab in lstlab:
-                temp = G[labels_a == lab, i]
-                res += np.linalg.norm(temp)
-        return res
+        G_split = nx.repeat(G.T[:, :, None], n_labels, axis=2)
+        return nx.sum(nx.norm(G_split * unroll_labels_idx, axis=1))
 
     def df(G):
-        W = np.zeros(G.shape)
-        for i in range(G.shape[1]):
-            for lab in lstlab:
-                temp = G[labels_a == lab, i]
-                n = np.linalg.norm(temp)
-                if n:
-                    W[labels_a == lab, i] = temp / n
-        return W
-
-    return gcg(a, b, M, reg, eta, f, df, G0=None, numItermax=numItermax,
-               numInnerItermax=numInnerItermax, stopThr=stopInnerThr,
-               verbose=verbose, log=log)
-
-
-def joint_OT_mapping_linear(xs, xt, mu=1, eta=0.001, bias=False, verbose=False,
-                            verbose2=False, numItermax=100, numInnerItermax=10,
-                            stopInnerThr=1e-6, stopThr=1e-5, log=False,
-                            **kwargs):
-    r"""Joint OT and linear mapping estimation as proposed in
-    :ref:`[8] <references-joint-OT-mapping-linear>`.
-
-    The function solves the following optimization problem:
-
-    .. math::
-        \min_{\gamma,L}\quad \|L(\mathbf{X_s}) - n_s\gamma \mathbf{X_t} \|^2_F +
-          \mu \langle \gamma, \mathbf{M} \rangle_F + \eta \|L - \mathbf{I}\|^2_F
-
-        s.t. \ \gamma \mathbf{1} = \mathbf{a}
-
-             \gamma^T \mathbf{1} = \mathbf{b}
-
-             \gamma \geq 0
-
-    where :
-
-    - :math:`\mathbf{M}` is the (`ns`, `nt`) squared euclidean cost matrix between samples in
-      :math:`\mathbf{X_s}` and :math:`\mathbf{X_t}` (scaled by :math:`n_s`)
-    - :math:`L` is a :math:`d\times d` linear operator that approximates the barycentric
-      mapping
-    - :math:`\mathbf{I}` is the identity matrix (neutral linear mapping)
-    - :math:`\mathbf{a}` and :math:`\mathbf{b}` are uniform source and target weights
-
-    The problem consist in solving jointly an optimal transport matrix
-    :math:`\gamma` and a linear mapping that fits the barycentric mapping
-    :math:`n_s\gamma \mathbf{X_t}`.
-
-    One can also estimate a mapping with constant bias (see supplementary
-    material of :ref:`[8] <references-joint-OT-mapping-linear>`) using the bias optional argument.
-
-    The algorithm used for solving the problem is the block coordinate
-    descent that alternates between updates of :math:`\mathbf{G}` (using conditionnal gradient)
-    and the update of :math:`\mathbf{L}` using a classical least square solver.
-
-
-    Parameters
-    ----------
-    xs : np.ndarray (ns,d)
-        samples in the source domain
-    xt : np.ndarray (nt,d)
-        samples in the target domain
-    mu : float,optional
-        Weight for the linear OT loss (>0)
-    eta : float, optional
-        Regularization term  for the linear mapping L (>0)
-    bias : bool,optional
-        Estimate linear mapping with constant bias
-    numItermax : int, optional
-        Max number of BCD iterations
-    stopThr : float, optional
-        Stop threshold on relative loss decrease (>0)
-    numInnerItermax : int, optional
-        Max number of iterations (inner CG solver)
-    stopInnerThr : float, optional
-        Stop threshold on error (inner CG solver) (>0)
-    verbose : bool, optional
-        Print information along iterations
-    log : bool, optional
-        record log if True
-
-
-    Returns
-    -------
-    gamma : (ns, nt) ndarray
-        Optimal transportation matrix for the given parameters
-    L : (d, d) ndarray
-        Linear mapping matrix ((:math:`d+1`, `d`) if bias)
-    log : dict
-        log dictionary return only if log==True in parameters
-
-
-    .. _references-joint-OT-mapping-linear:
-    References
-    ----------
-    .. [8] M. Perrot, N. Courty, R. Flamary, A. Habrard,
-        "Mapping estimation for discrete optimal transport",
-        Neural Information Processing Systems (NIPS), 2016.
-
-    See Also
-    --------
-    ot.lp.emd : Unregularized OT
-    ot.optim.cg : General regularized OT
-
-    """
-
-    ns, nt, d = xs.shape[0], xt.shape[0], xt.shape[1]
-
-    if bias:
-        xs1 = np.hstack((xs, np.ones((ns, 1))))
-        xstxs = xs1.T.dot(xs1)
-        Id = np.eye(d + 1)
-        Id[-1] = 0
-        I0 = Id[:, :-1]
-
-        def sel(x):
-            return x[:-1, :]
-    else:
-        xs1 = xs
-        xstxs = xs1.T.dot(xs1)
-        Id = np.eye(d)
-        I0 = Id
-
-        def sel(x):
-            return x
-
-    if log:
-        log = {'err': []}
-
-    a, b = unif(ns), unif(nt)
-    M = dist(xs, xt) * ns
-    G = emd(a, b, M)
-
-    vloss = []
-
-    def loss(L, G):
-        """Compute full loss"""
-        return np.sum((xs1.dot(L) - ns * G.dot(xt)) ** 2) + mu * \
-            np.sum(G * M) + eta * np.sum(sel(L - I0) ** 2)
-
-    def solve_L(G):
-        """ solve L problem with fixed G (least square)"""
-        xst = ns * G.dot(xt)
-        return np.linalg.solve(xstxs + eta * Id, xs1.T.dot(xst) + eta * I0)
-
-    def solve_G(L, G0):
-        """Update G with CG algorithm"""
-        xsi = xs1.dot(L)
-
-        def f(G):
-            return np.sum((xsi - ns * G.dot(xt)) ** 2)
-
-        def df(G):
-            return -2 * ns * (xsi - ns * G.dot(xt)).dot(xt.T)
-
-        G = cg(a, b, M, 1.0 / mu, f, df, G0=G0,
-               numItermax=numInnerItermax, stopThr=stopInnerThr)
-        return G
-
-    L = solve_L(G)
-
-    vloss.append(loss(L, G))
-
-    if verbose:
-        print('{:5s}|{:12s}|{:8s}'.format(
-            'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
-        print('{:5d}|{:8e}|{:8e}'.format(0, vloss[-1], 0))
-
-    # init loop
-    if numItermax > 0:
-        loop = 1
-    else:
-        loop = 0
-    it = 0
-
-    while loop:
-
-        it += 1
-
-        # update G
-        G = solve_G(L, G)
-
-        # update L
-        L = solve_L(G)
-
-        vloss.append(loss(L, G))
-
-        if it >= numItermax:
-            loop = 0
-
-        if abs(vloss[-1] - vloss[-2]) / abs(vloss[-2]) < stopThr:
-            loop = 0
-
-        if verbose:
-            if it % 20 == 0:
-                print('{:5s}|{:12s}|{:8s}'.format(
-                    'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
-            print('{:5d}|{:8e}|{:8e}'.format(
-                it, vloss[-1], (vloss[-1] - vloss[-2]) / abs(vloss[-2])))
-    if log:
-        log['loss'] = vloss
-        return G, L, log
-    else:
-        return G, L
-
-
-def joint_OT_mapping_kernel(xs, xt, mu=1, eta=0.001, kerneltype='gaussian',
-                            sigma=1, bias=False, verbose=False, verbose2=False,
-                            numItermax=100, numInnerItermax=10,
-                            stopInnerThr=1e-6, stopThr=1e-5, log=False,
-                            **kwargs):
-    r"""Joint OT and nonlinear mapping estimation with kernels as proposed in
-    :ref:`[8] <references-joint-OT-mapping-kernel>`.
-
-    The function solves the following optimization problem:
-
-    .. math::
-        \min_{\gamma, L\in\mathcal{H}}\quad \|L(\mathbf{X_s}) -
-        n_s\gamma \mathbf{X_t}\|^2_F + \mu \langle \gamma, \mathbf{M} \rangle_F +
-        \eta \|L\|^2_\mathcal{H}
-
-        s.t. \ \gamma \mathbf{1} = \mathbf{a}
-
-             \gamma^T \mathbf{1} = \mathbf{b}
-
-             \gamma \geq 0
-
-
-    where :
-
-    - :math:`\mathbf{M}` is the (`ns`, `nt`) squared euclidean cost matrix between samples in
-      :math:`\mathbf{X_s}` and :math:`\mathbf{X_t}` (scaled by :math:`n_s`)
-    - :math:`L` is a :math:`n_s \times d` linear operator on a kernel matrix that
-      approximates the barycentric mapping
-    - :math:`\mathbf{a}` and :math:`\mathbf{b}` are uniform source and target weights
-
-    The problem consist in solving jointly an optimal transport matrix
-    :math:`\gamma` and the nonlinear mapping that fits the barycentric mapping
-    :math:`n_s\gamma \mathbf{X_t}`.
-
-    One can also estimate a mapping with constant bias (see supplementary
-    material of :ref:`[8] <references-joint-OT-mapping-kernel>`) using the bias optional argument.
-
-    The algorithm used for solving the problem is the block coordinate
-    descent that alternates between updates of :math:`\mathbf{G}` (using conditionnal gradient)
-    and the update of :math:`\mathbf{L}` using a classical kernel least square solver.
-
-
-    Parameters
-    ----------
-    xs : np.ndarray (ns,d)
-        samples in the source domain
-    xt : np.ndarray (nt,d)
-        samples in the target domain
-    mu : float,optional
-        Weight for the linear OT loss (>0)
-    eta : float, optional
-        Regularization term  for the linear mapping L (>0)
-    kerneltype : str,optional
-        kernel used by calling function :py:func:`ot.utils.kernel` (gaussian by default)
-    sigma : float, optional
-        Gaussian kernel bandwidth.
-    bias : bool,optional
-        Estimate linear mapping with constant bias
-    verbose : bool, optional
-        Print information along iterations
-    verbose2 : bool, optional
-        Print information along iterations
-    numItermax : int, optional
-        Max number of BCD iterations
-    numInnerItermax : int, optional
-        Max number of iterations (inner CG solver)
-    stopInnerThr : float, optional
-        Stop threshold on error (inner CG solver) (>0)
-    stopThr : float, optional
-        Stop threshold on relative loss decrease (>0)
-    log : bool, optional
-        record log if True
-
-
-    Returns
-    -------
-    gamma : (ns, nt) ndarray
-        Optimal transportation matrix for the given parameters
-    L : (ns, d) ndarray
-        Nonlinear mapping matrix ((:math:`n_s+1`, `d`) if bias)
-    log : dict
-        log dictionary return only if log==True in parameters
-
-
-    .. _references-joint-OT-mapping-kernel:
-    References
-    ----------
-    .. [8] M. Perrot, N. Courty, R. Flamary, A. Habrard,
-       "Mapping estimation for discrete optimal transport",
-       Neural Information Processing Systems (NIPS), 2016.
-
-    See Also
-    --------
-    ot.lp.emd : Unregularized OT
-    ot.optim.cg : General regularized OT
-
-    """
-
-    ns, nt = xs.shape[0], xt.shape[0]
-
-    K = kernel(xs, xs, method=kerneltype, sigma=sigma)
-    if bias:
-        K1 = np.hstack((K, np.ones((ns, 1))))
-        Id = np.eye(ns + 1)
-        Id[-1] = 0
-        Kp = np.eye(ns + 1)
-        Kp[:ns, :ns] = K
-
-        # ls regu
-        # K0 = K1.T.dot(K1)+eta*I
-        # Kreg=I
-
-        # RKHS regul
-        K0 = K1.T.dot(K1) + eta * Kp
-        Kreg = Kp
-
-    else:
-        K1 = K
-        Id = np.eye(ns)
-
-        # ls regul
-        # K0 = K1.T.dot(K1)+eta*I
-        # Kreg=I
-
-        # proper kernel ridge
-        K0 = K + eta * Id
-        Kreg = K
-
-    if log:
-        log = {'err': []}
-
-    a, b = unif(ns), unif(nt)
-    M = dist(xs, xt) * ns
-    G = emd(a, b, M)
-
-    vloss = []
-
-    def loss(L, G):
-        """Compute full loss"""
-        return np.sum((K1.dot(L) - ns * G.dot(xt)) ** 2) + mu * \
-            np.sum(G * M) + eta * np.trace(L.T.dot(Kreg).dot(L))
-
-    def solve_L_nobias(G):
-        """ solve L problem with fixed G (least square)"""
-        xst = ns * G.dot(xt)
-        return np.linalg.solve(K0, xst)
-
-    def solve_L_bias(G):
-        """ solve L problem with fixed G (least square)"""
-        xst = ns * G.dot(xt)
-        return np.linalg.solve(K0, K1.T.dot(xst))
-
-    def solve_G(L, G0):
-        """Update G with CG algorithm"""
-        xsi = K1.dot(L)
-
-        def f(G):
-            return np.sum((xsi - ns * G.dot(xt)) ** 2)
-
-        def df(G):
-            return -2 * ns * (xsi - ns * G.dot(xt)).dot(xt.T)
-
-        G = cg(a, b, M, 1.0 / mu, f, df, G0=G0,
-               numItermax=numInnerItermax, stopThr=stopInnerThr)
-        return G
-
-    if bias:
-        solve_L = solve_L_bias
-    else:
-        solve_L = solve_L_nobias
-
-    L = solve_L(G)
-
-    vloss.append(loss(L, G))
-
-    if verbose:
-        print('{:5s}|{:12s}|{:8s}'.format(
-            'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
-        print('{:5d}|{:8e}|{:8e}'.format(0, vloss[-1], 0))
-
-    # init loop
-    if numItermax > 0:
-        loop = 1
-    else:
-        loop = 0
-    it = 0
-
-    while loop:
-
-        it += 1
-
-        # update G
-        G = solve_G(L, G)
-
-        # update L
-        L = solve_L(G)
-
-        vloss.append(loss(L, G))
-
-        if it >= numItermax:
-            loop = 0
-
-        if abs(vloss[-1] - vloss[-2]) / abs(vloss[-2]) < stopThr:
-            loop = 0
-
-        if verbose:
-            if it % 20 == 0:
-                print('{:5s}|{:12s}|{:8s}'.format(
-                    'It.', 'Loss', 'Delta loss') + '\n' + '-' * 32)
-            print('{:5d}|{:8e}|{:8e}'.format(
-                it, vloss[-1], (vloss[-1] - vloss[-2]) / abs(vloss[-2])))
-    if log:
-        log['loss'] = vloss
-        return G, L, log
-    else:
-        return G, L
-
-
-def OT_mapping_linear(xs, xt, reg=1e-6, ws=None,
-                      wt=None, bias=True, log=False):
-    r"""Return OT linear operator between samples.
-
-    The function estimates the optimal linear operator that aligns the two
-    empirical distributions. This is equivalent to estimating the closed
-    form mapping between two Gaussian distributions :math:`\mathcal{N}(\mu_s,\Sigma_s)`
-    and :math:`\mathcal{N}(\mu_t,\Sigma_t)` as proposed in
-    :ref:`[14] <references-OT-mapping-linear>` and discussed in remark 2.29 in
-    :ref:`[15] <references-OT-mapping-linear>`.
-
-    The linear operator from source to target :math:`M`
-
-    .. math::
-        M(\mathbf{x})= \mathbf{A} \mathbf{x} + \mathbf{b}
-
-    where :
-
-    .. math::
-        \mathbf{A} &= \Sigma_s^{-1/2} \left(\Sigma_s^{1/2}\Sigma_t\Sigma_s^{1/2} \right)^{1/2}
-        \Sigma_s^{-1/2}
-
-        \mathbf{b} &= \mu_t - \mathbf{A} \mu_s
-
-    Parameters
-    ----------
-    xs : np.ndarray (ns,d)
-        samples in the source domain
-    xt : np.ndarray (nt,d)
-        samples in the target domain
-    reg : float,optional
-        regularization added to the diagonals of covariances (>0)
-    ws : np.ndarray (ns,1), optional
-        weights for the source samples
-    wt : np.ndarray (ns,1), optional
-        weights for the target samples
-    bias: boolean, optional
-        estimate bias :math:`\mathbf{b}` else :math:`\mathbf{b} = 0` (default:True)
-    log : bool, optional
-        record log if True
-
-
-    Returns
-    -------
-    A : (d, d) ndarray
-        Linear operator
-    b : (1, d) ndarray
-        bias
-    log : dict
-        log dictionary return only if log==True in parameters
-
-
-    .. _references-OT-mapping-linear:
-    References
-    ----------
-    .. [14] Knott, M. and Smith, C. S. "On the optimal mapping of
-        distributions", Journal of Optimization Theory and Applications
-        Vol 43, 1984
-
-    .. [15] Peyré, G., & Cuturi, M. (2017). "Computational Optimal
-        Transport", 2018.
-
-
-    """
-
-    d = xs.shape[1]
-
-    if bias:
-        mxs = xs.mean(0, keepdims=True)
-        mxt = xt.mean(0, keepdims=True)
-
-        xs = xs - mxs
-        xt = xt - mxt
-    else:
-        mxs = np.zeros((1, d))
-        mxt = np.zeros((1, d))
-
-    if ws is None:
-        ws = np.ones((xs.shape[0], 1)) / xs.shape[0]
-
-    if wt is None:
-        wt = np.ones((xt.shape[0], 1)) / xt.shape[0]
-
-    Cs = (xs * ws).T.dot(xs) / ws.sum() + reg * np.eye(d)
-    Ct = (xt * wt).T.dot(xt) / wt.sum() + reg * np.eye(d)
-
-    Cs12 = linalg.sqrtm(Cs)
-    Cs_12 = linalg.inv(Cs12)
-
-    M0 = linalg.sqrtm(Cs12.dot(Ct.dot(Cs12)))
-
-    A = Cs_12.dot(M0.dot(Cs_12))
-
-    b = mxt - mxs.dot(A)
-
-    if log:
-        log = {}
-        log['Cs'] = Cs
-        log['Ct'] = Ct
-        log['Cs12'] = Cs12
-        log['Cs_12'] = Cs_12
-        return A, b, log
-    else:
-        return A, b
-
-
-def emd_laplace(a, b, xs, xt, M, sim='knn', sim_param=None, reg='pos', eta=1, alpha=.5,
-                numItermax=100, stopThr=1e-9, numInnerItermax=100000,
-                stopInnerThr=1e-9, log=False, verbose=False):
+        G_split = nx.repeat(G.T[:, :, None], n_labels, axis=2) * unroll_labels_idx
+        W = nx.norm(G_split * unroll_labels_idx, axis=1, keepdims=True)
+        G_norm = G_split / nx.clip(W, eps, None)
+        return nx.sum(G_norm, axis=2).T
+
+    return gcg(
+        a,
+        b,
+        M,
+        reg,
+        eta,
+        f,
+        df,
+        G0=None,
+        numItermax=numItermax,
+        numInnerItermax=numInnerItermax,
+        stopThr=stopInnerThr,
+        verbose=verbose,
+        log=log,
+    )
+
+
+OT_mapping_linear = deprecated(empirical_bures_wasserstein_mapping)
+
+
+def emd_laplace(
+    a,
+    b,
+    xs,
+    xt,
+    M,
+    sim="knn",
+    sim_param=None,
+    reg="pos",
+    eta=1,
+    alpha=0.5,
+    numItermax=100,
+    stopThr=1e-9,
+    numInnerItermax=100000,
+    stopInnerThr=1e-9,
+    log=False,
+    verbose=False,
+):
     r"""Solve the optimal transport problem (OT) with Laplacian regularization
 
     .. math::
@@ -798,15 +380,15 @@ def emd_laplace(a, b, xs, xt, M, sim='knn', sim_param=None, reg='pos', eta=1, al
 
     Parameters
     ----------
-    a : np.ndarray (ns,)
+    a : array-like (ns,)
         samples weights in the source domain
-    b : np.ndarray (nt,)
+    b : array-like (nt,)
         samples weights in the target domain
-    xs : np.ndarray (ns,d)
+    xs : array-like (ns,d)
         samples in the source domain
-    xt : np.ndarray (nt,d)
+    xt : array-like (nt,d)
         samples in the target domain
-    M : np.ndarray (ns,nt)
+    M : array-like (ns,nt)
         loss matrix
     sim : string, optional
         Type of similarity ('knn' or 'gauss') used to construct the Laplacian.
@@ -834,7 +416,7 @@ def emd_laplace(a, b, xs, xt, M, sim='knn', sim_param=None, reg='pos', eta=1, al
 
     Returns
     -------
-    gamma : (ns, nt) ndarray
+    gamma : (ns, nt) array-like
         Optimal transportation matrix for the given parameters
     log : dict
         log dictionary return only if log==True in parameters
@@ -844,9 +426,9 @@ def emd_laplace(a, b, xs, xt, M, sim='knn', sim_param=None, reg='pos', eta=1, al
     References
     ----------
     .. [5] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-       "Optimal Transport for Domain Adaptation," in IEEE
-       Transactions on Pattern Analysis and Machine Intelligence,
-       vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE
+        Transactions on Pattern Analysis and Machine Intelligence,
+        vol.PP, no.99, pp.1-1
 
     .. [30] R. Flamary, N. Courty, D. Tuia, A. Rakotomamonjy,
         "Optimal transport with Laplacian regularization: Applications to domain adaptation and shape matching,"
@@ -860,49 +442,82 @@ def emd_laplace(a, b, xs, xt, M, sim='knn', sim_param=None, reg='pos', eta=1, al
     """
     if not isinstance(sim_param, (int, float, type(None))):
         raise ValueError(
-            'Similarity parameter should be an int or a float. Got {type} instead.'.format(type=type(sim_param).__name__))
+            "Similarity parameter should be an int or a float. Got {type} instead.".format(
+                type=type(sim_param).__name__
+            )
+        )
 
-    if sim == 'gauss':
+    a, b, xs, xt, M = list_to_array(a, b, xs, xt, M)
+    nx = get_backend(a, b, xs, xt, M)
+
+    if sim == "gauss":
         if sim_param is None:
-            sim_param = 1 / (2 * (np.mean(dist(xs, xs, 'sqeuclidean')) ** 2))
+            sim_param = 1 / (2 * (nx.mean(dist(xs, xs, "sqeuclidean")) ** 2))
         sS = kernel(xs, xs, method=sim, sigma=sim_param)
         sT = kernel(xt, xt, method=sim, sigma=sim_param)
 
-    elif sim == 'knn':
+    elif sim == "knn":
         if sim_param is None:
             sim_param = 3
+        try:
+            from sklearn.neighbors import kneighbors_graph
+        except ImportError:
+            raise ValueError(
+                "scikit-learn must be installed to use knn similarity. Install with `$pip install scikit-learn`."
+            )
 
-        from sklearn.neighbors import kneighbors_graph
-
-        sS = kneighbors_graph(X=xs, n_neighbors=int(sim_param)).toarray()
+        sS = nx.from_numpy(
+            kneighbors_graph(X=nx.to_numpy(xs), n_neighbors=int(sim_param)).toarray(),
+            type_as=xs,
+        )
         sS = (sS + sS.T) / 2
-        sT = kneighbors_graph(xt, n_neighbors=int(sim_param)).toarray()
+        sT = nx.from_numpy(
+            kneighbors_graph(X=nx.to_numpy(xt), n_neighbors=int(sim_param)).toarray(),
+            type_as=xt,
+        )
         sT = (sT + sT.T) / 2
     else:
-        raise ValueError('Unknown similarity type {sim}. Currently supported similarity types are "knn" and "gauss".'.format(sim=sim))
+        raise ValueError(
+            'Unknown similarity type {sim}. Currently supported similarity types are "knn" and "gauss".'.format(
+                sim=sim
+            )
+        )
 
     lS = laplacian(sS)
     lT = laplacian(sT)
 
     def f(G):
-        return alpha * np.trace(np.dot(xt.T, np.dot(G.T, np.dot(lS, np.dot(G, xt))))) \
-            + (1 - alpha) * np.trace(np.dot(xs.T, np.dot(G, np.dot(lT, np.dot(G.T, xs)))))
+        return alpha * nx.trace(dots(xt.T, G.T, lS, G, xt)) + (1 - alpha) * nx.trace(
+            dots(xs.T, G, lT, G.T, xs)
+        )
 
     ls2 = lS + lS.T
     lt2 = lT + lT.T
-    xt2 = np.dot(xt, xt.T)
+    xt2 = nx.dot(xt, xt.T)
 
-    if reg == 'disp':
+    if reg == "disp":
         Cs = -eta * alpha / xs.shape[0] * dots(ls2, xs, xt.T)
         Ct = -eta * (1 - alpha) / xt.shape[0] * dots(xs, xt.T, lt2)
         M = M + Cs + Ct
 
     def df(G):
-        return alpha * np.dot(ls2, np.dot(G, xt2))\
-            + (1 - alpha) * np.dot(xs, np.dot(xs.T, np.dot(G, lt2)))
+        return alpha * dots(ls2, G, xt2) + (1 - alpha) * dots(xs, xs.T, G, lt2)
 
-    return cg(a, b, M, reg=eta, f=f, df=df, G0=None, numItermax=numItermax, numItermaxEmd=numInnerItermax,
-              stopThr=stopThr, stopThr2=stopInnerThr, verbose=verbose, log=log)
+    return cg(
+        a,
+        b,
+        M,
+        reg=eta,
+        f=f,
+        df=df,
+        G0=None,
+        numItermax=numItermax,
+        numItermaxEmd=numInnerItermax,
+        stopThr=stopThr,
+        stopThr2=stopInnerThr,
+        verbose=verbose,
+        log=log,
+    )
 
 
 def distribution_estimation_uniform(X):
@@ -919,11 +534,10 @@ def distribution_estimation_uniform(X):
         The uniform distribution estimated from :math:`\mathbf{X}`
     """
 
-    return unif(X.shape[0])
+    return unif(X.shape[0], type_as=X)
 
 
 class BaseTransport(BaseEstimator):
-
     """Base class for OTDA objects
 
     .. note::
@@ -973,31 +587,42 @@ class BaseTransport(BaseEstimator):
         self : object
             Returns self.
         """
+        nx = self._get_backend(Xs, ys, Xt, yt)
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs, Xt=Xt):
-
             # pairwise distance
             self.cost_ = dist(Xs, Xt, metric=self.metric)
-            self.cost_ = cost_normalization(self.cost_, self.norm)
+            self.cost_, self.norm_cost_ = cost_normalization(
+                self.cost_, self.norm, return_value=True
+            )
 
             if (ys is not None) and (yt is not None):
+                if self.limit_max != np.inf:
+                    self.limit_max = self.limit_max * nx.max(self.cost_)
 
-                if self.limit_max != np.infty:
-                    self.limit_max = self.limit_max * np.max(self.cost_)
-
-                # assumes labeled source samples occupy the first rows
-                # and labeled target samples occupy the first columns
-                classes = [c for c in np.unique(ys) if c != -1]
-                for c in classes:
-                    idx_s = np.where((ys != c) & (ys != -1))
-                    idx_t = np.where(yt == c)
-
-                    # all the coefficients corresponding to a source sample
-                    # and a target sample :
-                    # with different labels get a infinite
-                    for j in idx_t[0]:
-                        self.cost_[idx_s[0], j] = self.limit_max
+                # present_labels is a (ns, nt) matrix of {0, 1} such that
+                # the cell (i, j) is 1 iff both ys[i] and yt[j] are labeled
+                # (i.e. neither is masked with MISSING_LABEL)
+                present_ys = (ys != MISSING_LABEL) + nx.zeros(ys.shape, type_as=ys)
+                present_yt = (yt != MISSING_LABEL) + nx.zeros(yt.shape, type_as=yt)
+                present_labels = present_ys[:, None] @ present_yt[None, :]
+                # label_mismatch is a (ns, nt) matrix of {True, False} such that
+                # the cell (i, j) is True if ys[i] != yt[j]
+                label_mismatch = (ys[:, None] - yt[None, :]) != 0
+                # cost correction is a (ns, nt) matrix of {-Inf, float, Inf} such
+                # that he cells (i, j) has -Inf where there's no correction necessary
+                # by 'correction' we mean setting cost to a large value when two
+                # labeled samples have different labels
+                # we suppress potential RuntimeWarning caused by Inf multiplication
+                # (as we explicitly cover potential NANs later)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    cost_correction = label_mismatch * present_labels * self.limit_max
+                # this operation is necessary because 0 * Inf = NAN
+                # thus is irrelevant when limit_max is finite
+                cost_correction = nx.nan_to_num(cost_correction, -np.inf)
+                self.cost_ = nx.maximum(self.cost_, cost_correction)
 
             # distribution estimation
             self.mu_s = self.distribution_estimation(Xs)
@@ -1062,45 +687,44 @@ class BaseTransport(BaseEstimator):
         transp_Xs : array-like, shape (n_source_samples, n_features)
             The transport source samples.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs):
-
-            if np.array_equal(self.xs_, Xs):
-
+            if nx.array_equal(self.xs_, Xs):
                 # perform standard barycentric mapping
-                transp = self.coupling_ / np.sum(self.coupling_, 1)[:, None]
+                transp = self.coupling_ / nx.sum(self.coupling_, axis=1)[:, None]
 
                 # set nans to 0
-                transp[~ np.isfinite(transp)] = 0
+                transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
                 # compute transported samples
-                transp_Xs = np.dot(transp, self.xt_)
+                transp_Xs = nx.dot(transp, self.xt_)
             else:
                 # perform out of sample mapping
-                indices = np.arange(Xs.shape[0])
+                indices = nx.arange(Xs.shape[0])
                 batch_ind = [
-                    indices[i:i + batch_size]
-                    for i in range(0, len(indices), batch_size)]
+                    indices[i : i + batch_size]
+                    for i in range(0, len(indices), batch_size)
+                ]
 
                 transp_Xs = []
                 for bi in batch_ind:
                     # get the nearest neighbor in the source domain
                     D0 = dist(Xs[bi], self.xs_)
-                    idx = np.argmin(D0, axis=1)
+                    idx = nx.argmin(D0, axis=1)
 
                     # transport the source samples
-                    transp = self.coupling_ / np.sum(
-                        self.coupling_, 1)[:, None]
-                    transp[~ np.isfinite(transp)] = 0
-                    transp_Xs_ = np.dot(transp, self.xt_)
+                    transp = self.coupling_ / nx.sum(self.coupling_, axis=1)[:, None]
+                    transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
+                    transp_Xs_ = nx.dot(transp, self.xt_)
 
                     # define the transported points
                     transp_Xs_ = transp_Xs_[idx, :] + Xs[bi] - self.xs_[idx, :]
 
                     transp_Xs.append(transp_Xs_)
 
-                transp_Xs = np.concatenate(transp_Xs, axis=0)
+                transp_Xs = nx.concatenate(transp_Xs, axis=0)
 
             return transp_Xs
 
@@ -1123,35 +747,28 @@ class BaseTransport(BaseEstimator):
         References
         ----------
         .. [27] Ievgen Redko, Nicolas Courty, Rémi Flamary, Devis Tuia
-           "Optimal transport for multi-source domain adaptation under target shift",
-           International Conference on Artificial Intelligence and Statistics (AISTATS), 2019.
+            "Optimal transport for multi-source domain adaptation under target shift",
+            International Conference on Artificial Intelligence and Statistics (AISTATS), 2019.
 
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(ys=ys):
-
-            ysTemp = label_normalization(np.copy(ys))
-            classes = np.unique(ysTemp)
-            n = len(classes)
-            D1 = np.zeros((n, len(ysTemp)))
-
             # perform label propagation
-            transp = self.coupling_ / np.sum(self.coupling_, 0, keepdims=True)
+            transp = self.coupling_ / nx.sum(self.coupling_, axis=0)[None, :]
 
             # set nans to 0
-            transp[~ np.isfinite(transp)] = 0
-
-            for c in classes:
-                D1[int(c), ysTemp == c] = 1
+            transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
             # compute propagated labels
-            transp_ys = np.dot(D1, transp)
+            labels = label_normalization(ys)
+            masks = labels_to_masks(labels, nx=nx, type_as=transp)
+            transp_ys = nx.dot(masks.T, transp)
 
             return transp_ys.T
 
-    def inverse_transform(self, Xs=None, ys=None, Xt=None, yt=None,
-                          batch_size=128):
+    def inverse_transform(self, Xs=None, ys=None, Xt=None, yt=None, batch_size=128):
         r"""Transports target samples :math:`\mathbf{X_t}` onto source samples :math:`\mathbf{X_s}`
 
         Parameters
@@ -1176,44 +793,43 @@ class BaseTransport(BaseEstimator):
         transp_Xt : array-like, shape (n_source_samples, n_features)
             The transported target samples.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(Xt=Xt):
-
-            if np.array_equal(self.xt_, Xt):
-
+            if nx.array_equal(self.xt_, Xt):
                 # perform standard barycentric mapping
-                transp_ = self.coupling_.T / np.sum(self.coupling_, 0)[:, None]
+                transp_ = self.coupling_.T / nx.sum(self.coupling_, 0)[:, None]
 
                 # set nans to 0
-                transp_[~ np.isfinite(transp_)] = 0
+                transp_ = nx.nan_to_num(transp_, nan=0, posinf=0, neginf=0)
 
                 # compute transported samples
-                transp_Xt = np.dot(transp_, self.xs_)
+                transp_Xt = nx.dot(transp_, self.xs_)
             else:
                 # perform out of sample mapping
-                indices = np.arange(Xt.shape[0])
+                indices = nx.arange(Xt.shape[0])
                 batch_ind = [
-                    indices[i:i + batch_size]
-                    for i in range(0, len(indices), batch_size)]
+                    indices[i : i + batch_size]
+                    for i in range(0, len(indices), batch_size)
+                ]
 
                 transp_Xt = []
                 for bi in batch_ind:
                     D0 = dist(Xt[bi], self.xt_)
-                    idx = np.argmin(D0, axis=1)
+                    idx = nx.argmin(D0, axis=1)
 
                     # transport the target samples
-                    transp_ = self.coupling_.T / np.sum(
-                        self.coupling_, 0)[:, None]
-                    transp_[~ np.isfinite(transp_)] = 0
-                    transp_Xt_ = np.dot(transp_, self.xs_)
+                    transp_ = self.coupling_.T / nx.sum(self.coupling_, 0)[:, None]
+                    transp_ = nx.nan_to_num(transp_, nan=0, posinf=0, neginf=0)
+                    transp_Xt_ = nx.dot(transp_, self.xs_)
 
                     # define the transported points
                     transp_Xt_ = transp_Xt_[idx, :] + Xt[bi] - self.xt_[idx, :]
 
                     transp_Xt.append(transp_Xt_)
 
-                transp_Xt = np.concatenate(transp_Xt, axis=0)
+                transp_Xt = nx.concatenate(transp_Xt, axis=0)
 
             return transp_Xt
 
@@ -1230,32 +846,25 @@ class BaseTransport(BaseEstimator):
         transp_ys : array-like, shape (n_source_samples, nb_classes)
             Estimated soft source labels.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(yt=yt):
-
-            ytTemp = label_normalization(np.copy(yt))
-            classes = np.unique(ytTemp)
-            n = len(classes)
-            D1 = np.zeros((n, len(ytTemp)))
-
             # perform label propagation
-            transp = self.coupling_ / np.sum(self.coupling_, 1)[:, None]
-
+            transp = self.coupling_ / nx.sum(self.coupling_, 1)[:, None]
             # set nans to 0
-            transp[~ np.isfinite(transp)] = 0
+            transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
-            for c in classes:
-                D1[int(c), ytTemp == c] = 1
-
-            # compute propagated samples
-            transp_ys = np.dot(D1, transp.T)
+            # compute propagated labels
+            labels = label_normalization(yt)
+            masks = labels_to_masks(labels, nx=nx, type_as=transp)
+            transp_ys = nx.dot(masks.T, transp.T)
 
             return transp_ys.T
 
 
 class LinearTransport(BaseTransport):
-    r""" OT linear operator between empirical distributions
+    r"""OT linear operator between empirical distributions
 
     The function estimates the optimal linear operator that aligns the two
     empirical distributions. This is equivalent to estimating the closed
@@ -1299,8 +908,13 @@ class LinearTransport(BaseTransport):
 
     """
 
-    def __init__(self, reg=1e-8, bias=True, log=False,
-                 distribution_estimation=distribution_estimation_uniform):
+    def __init__(
+        self,
+        reg=1e-8,
+        bias=True,
+        log=False,
+        distribution_estimation=distribution_estimation_uniform,
+    ):
         self.bias = bias
         self.log = log
         self.reg = reg
@@ -1330,26 +944,36 @@ class LinearTransport(BaseTransport):
         self : object
             Returns self.
         """
+        nx = self._get_backend(Xs, ys, Xt, yt)
+        self.nx = nx
 
         self.mu_s = self.distribution_estimation(Xs)
         self.mu_t = self.distribution_estimation(Xt)
 
         # coupling estimation
-        returned_ = OT_mapping_linear(Xs, Xt, reg=self.reg,
-                                      ws=self.mu_s.reshape((-1, 1)),
-                                      wt=self.mu_t.reshape((-1, 1)),
-                                      bias=self.bias, log=self.log)
+        returned_ = empirical_bures_wasserstein_mapping(
+            Xs,
+            Xt,
+            reg=self.reg,
+            ws=nx.reshape(self.mu_s, (-1, 1)),
+            wt=nx.reshape(self.mu_t, (-1, 1)),
+            bias=self.bias,
+            log=self.log,
+        )
 
         # deal with the value of log
         if self.log:
             self.A_, self.B_, self.log_ = returned_
         else:
-            self.A_, self.B_, = returned_
+            (
+                self.A_,
+                self.B_,
+            ) = returned_
             self.log_ = dict()
 
         # re compute inverse mapping
-        self.A1_ = linalg.inv(self.A_)
-        self.B1_ = -self.B_.dot(self.A1_)
+        self.A1_ = nx.inv(self.A_)
+        self.B1_ = -nx.dot(self.B_, self.A1_)
 
         return self
 
@@ -1378,15 +1002,15 @@ class LinearTransport(BaseTransport):
         transp_Xs : array-like, shape (n_source_samples, n_features)
             The transport source samples.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs):
-            transp_Xs = Xs.dot(self.A_) + self.B_
+            transp_Xs = nx.dot(Xs, self.A_) + self.B_
 
             return transp_Xs
 
-    def inverse_transform(self, Xs=None, ys=None, Xt=None, yt=None,
-                          batch_size=128):
+    def inverse_transform(self, Xs=None, ys=None, Xt=None, yt=None, batch_size=128):
         r"""Transports target samples :math:`\mathbf{X_t}` onto source samples :math:`\mathbf{X_s}`
 
         Parameters
@@ -1411,16 +1035,135 @@ class LinearTransport(BaseTransport):
         transp_Xt : array-like, shape (n_source_samples, n_features)
             The transported target samples.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(Xt=Xt):
-            transp_Xt = Xt.dot(self.A1_) + self.B1_
+            transp_Xt = nx.dot(Xt, self.A1_) + self.B1_
 
             return transp_Xt
 
 
-class SinkhornTransport(BaseTransport):
+class LinearGWTransport(LinearTransport):
+    r"""OT Gaussian Gromov-Wasserstein linear operator between empirical distributions
 
+    The function estimates the optimal linear operator that aligns the two
+    empirical distributions optimally wrt the Gromov-Wasserstein distance. This is equivalent to estimating the closed
+    form mapping between two Gaussian distributions :math:`\mathcal{N}(\mu_s,\Sigma_s)`
+    and :math:`\mathcal{N}(\mu_t,\Sigma_t)` as proposed in
+    :ref:`[57] <references-lineargwtransport>`.
+
+    The linear operator from source to target :math:`M`
+
+    .. math::
+        M(\mathbf{x})= \mathbf{A} \mathbf{x} + \mathbf{b}
+
+    where the matrix :math:`\mathbf{A}` and the vector :math:`\mathbf{b}` are
+    defined in :ref:`[57] <references-lineargwtransport>`.
+
+
+
+    Parameters
+    ----------
+    sign_eigs : array-like (n_features), str, optional
+        sign of the eigenvalues of the mapping matrix, by default all signs will
+        be positive. If 'skewness' is provided, the sign of the eigenvalues is
+        selected as the product of the sign of the skewness of the projected data.
+    log : bool, optional
+        record log if True
+
+
+    .. _references-lineargwtransport:
+    References
+    ----------
+    .. [57] Delon, J., Desolneux, A., & Salmona, A. (2022). Gromov–Wasserstein
+        distances between Gaussian distributions. Journal of Applied Probability,
+        59(4), 1178-1198.
+
+    """
+
+    def __init__(
+        self,
+        log=False,
+        sign_eigs=None,
+        distribution_estimation=distribution_estimation_uniform,
+    ):
+        self.sign_eigs = sign_eigs
+        self.log = log
+        self.distribution_estimation = distribution_estimation
+
+    def fit(self, Xs=None, ys=None, Xt=None, yt=None):
+        r"""Build a coupling matrix from source and target sets of samples
+        :math:`(\mathbf{X_s}, \mathbf{y_s})` and :math:`(\mathbf{X_t}, \mathbf{y_t})`
+
+        Parameters
+        ----------
+        Xs : array-like, shape (n_source_samples, n_features)
+            The training input samples.
+        ys : array-like, shape (n_source_samples,)
+            The class labels
+        Xt : array-like, shape (n_target_samples, n_features)
+            The training input samples.
+        yt : array-like, shape (n_target_samples,)
+            The class labels. If some target samples are unlabelled, fill the
+            :math:`\mathbf{y_t}`'s elements with -1.
+
+            Warning: Note that, due to this convention -1 cannot be used as a
+            class label
+
+        Returns
+        -------
+        self : object
+            Returns self.
+        """
+        nx = self._get_backend(Xs, ys, Xt, yt)
+        self.nx = nx
+
+        self.mu_s = self.distribution_estimation(Xs)
+        self.mu_t = self.distribution_estimation(Xt)
+
+        # coupling estimation
+        returned_ = empirical_gaussian_gromov_wasserstein_mapping(
+            Xs,
+            Xt,
+            ws=self.mu_s[:, None],
+            wt=self.mu_t[:, None],
+            sign_eigs=self.sign_eigs,
+            log=self.log,
+        )
+
+        # deal with the value of log
+        if self.log:
+            self.A_, self.B_, self.log_ = returned_
+        else:
+            (
+                self.A_,
+                self.B_,
+            ) = returned_
+            self.log_ = dict()
+
+        # re compute inverse mapping
+        returned_1_ = empirical_gaussian_gromov_wasserstein_mapping(
+            Xt,
+            Xs,
+            ws=self.mu_t[:, None],
+            wt=self.mu_s[:, None],
+            sign_eigs=self.sign_eigs,
+            log=self.log,
+        )
+        if self.log:
+            self.A1_, self.B1_, self.log_1_ = returned_1_
+        else:
+            (
+                self.A1_,
+                self.B1_,
+            ) = returned_1_
+            self.log_ = dict()
+
+        return self
+
+
+class SinkhornTransport(BaseTransport):
     """Domain Adaptation OT method based on Sinkhorn Algorithm
 
     Parameters
@@ -1440,14 +1183,19 @@ class SinkhornTransport(BaseTransport):
         The ground metric for the Wasserstein problem
     norm : string, optional (default=None)
         If given, normalize the ground metric to avoid numerical errors that
-        can occur with large metric values.
+        can occur with large metric values. Accepted values are  'median',
+        'max', 'log' and 'loglog'.
     distribution_estimation : callable, optional (defaults to the uniform)
         The kind of distribution estimation to employ
-    out_of_sample_map : string, optional (default="ferradans")
+    out_of_sample_map : string, optional (default="continuous")
         The kind of out of sample mapping to apply to transport samples
         from a domain into another one. Currently the only possible option is
-        "ferradans" which uses the method proposed in :ref:`[6] <references-sinkhorntransport>`.
-    limit_max: float, optional (default=np.infty)
+        "ferradans" which uses the nearest neighbor method proposed in :ref:`[6]
+        <references-sinkhorntransport>` while "continuous" use the out of sample
+        method from :ref:`[66]
+        <references-sinkhorntransport>` and :ref:`[19]
+        <references-sinkhorntransport>`.
+    limit_max: float, optional (default=np.inf)
         Controls the semi supervised mode. Transport between labeled source
         and target samples of different classes will exhibit an cost defined
         by this variable
@@ -1474,14 +1222,36 @@ class SinkhornTransport(BaseTransport):
     .. [6] Ferradans, S., Papadakis, N., Peyré, G., & Aujol, J. F. (2014).
             Regularized discrete optimal transport. SIAM Journal on Imaging
             Sciences, 7(3), 1853-1882.
+
+    .. [19] Seguy, V., Bhushan Damodaran, B., Flamary, R., Courty, N., Rolet, A.
+             & Blondel, M. Large-scale Optimal Transport and Mapping Estimation.
+             International Conference on Learning Representation (2018)
+
+    .. [66] Pooladian, Aram-Alexandre, and Jonathan Niles-Weed. "Entropic
+            estimation of optimal transport maps." arXiv preprint
+            arXiv:2109.12004 (2021).
+
     """
 
-    def __init__(self, reg_e=1., max_iter=1000,
-                 tol=10e-9, verbose=False, log=False,
-                 metric="sqeuclidean", norm=None,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans', limit_max=np.infty):
+    def __init__(
+        self,
+        reg_e=1.0,
+        method="sinkhorn_log",
+        max_iter=1000,
+        tol=10e-9,
+        verbose=False,
+        log=False,
+        metric="sqeuclidean",
+        norm=None,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="continuous",
+        limit_max=np.inf,
+    ):
+        if out_of_sample_map not in ["ferradans", "continuous"]:
+            raise ValueError("Unknown out_of_sample_map method")
+
         self.reg_e = reg_e
+        self.method = method
         self.max_iter = max_iter
         self.tol = tol
         self.verbose = verbose
@@ -1519,11 +1289,26 @@ class SinkhornTransport(BaseTransport):
 
         super(SinkhornTransport, self).fit(Xs, ys, Xt, yt)
 
+        if self.out_of_sample_map == "continuous":
+            self.log = True
+            if not self.method == "sinkhorn_log":
+                self.method = "sinkhorn_log"
+                warnings.warn(
+                    "The method has been set to 'sinkhorn_log' as it is the only method available for out_of_sample_map='continuous'"
+                )
+
         # coupling estimation
         returned_ = sinkhorn(
-            a=self.mu_s, b=self.mu_t, M=self.cost_, reg=self.reg_e,
-            numItermax=self.max_iter, stopThr=self.tol,
-            verbose=self.verbose, log=self.log)
+            a=self.mu_s,
+            b=self.mu_t,
+            M=self.cost_,
+            reg=self.reg_e,
+            method=self.method,
+            numItermax=self.max_iter,
+            stopThr=self.tol,
+            verbose=self.verbose,
+            log=self.log,
+        )
 
         # deal with the value of log
         if self.log:
@@ -1534,9 +1319,120 @@ class SinkhornTransport(BaseTransport):
 
         return self
 
+    def transform(self, Xs=None, ys=None, Xt=None, yt=None, batch_size=128):
+        r"""Transports source samples :math:`\mathbf{X_s}` onto target ones :math:`\mathbf{X_t}`
+
+        Parameters
+        ----------
+        Xs : array-like, shape (n_source_samples, n_features)
+            The source input samples.
+        ys : array-like, shape (n_source_samples,)
+            The class labels for source samples
+        Xt : array-like, shape (n_target_samples, n_features)
+            The target input samples.
+        yt : array-like, shape (n_target_samples,)
+            The class labels for target. If some target samples are unlabelled, fill the
+            :math:`\mathbf{y_t}`'s elements with -1.
+
+            Warning: Note that, due to this convention -1 cannot be used as a
+            class label
+        batch_size : int, optional (default=128)
+            The batch size for out of sample inverse transform
+
+        Returns
+        -------
+        transp_Xs : array-like, shape (n_source_samples, n_features)
+            The transport source samples.
+        """
+        nx = self.nx
+
+        if self.out_of_sample_map == "ferradans":
+            return super(SinkhornTransport, self).transform(Xs, ys, Xt, yt, batch_size)
+
+        else:  # self.out_of_sample_map == 'continuous':
+            # check the necessary inputs parameters are here
+            g = self.log_["log_v"]
+
+            indices = nx.arange(Xs.shape[0])
+            batch_ind = [
+                indices[i : i + batch_size] for i in range(0, len(indices), batch_size)
+            ]
+
+            transp_Xs = []
+            for bi in batch_ind:
+                # get the nearest neighbor in the source domain
+                M = dist(Xs[bi], self.xt_, metric=self.metric)
+
+                M = cost_normalization(M, self.norm, value=self.norm_cost_)
+
+                K = nx.exp(-M / self.reg_e + g[None, :])
+
+                transp_Xs_ = nx.dot(K, self.xt_) / nx.sum(K, axis=1)[:, None]
+
+                transp_Xs.append(transp_Xs_)
+
+            transp_Xs = nx.concatenate(transp_Xs, axis=0)
+
+            return transp_Xs
+
+    def inverse_transform(self, Xs=None, ys=None, Xt=None, yt=None, batch_size=128):
+        r"""Transports target samples :math:`\mathbf{X_t}` onto source samples :math:`\mathbf{X_s}`
+
+        Parameters
+        ----------
+        Xs : array-like, shape (n_source_samples, n_features)
+            The source input samples.
+        ys : array-like, shape (n_source_samples,)
+            The class labels for source samples
+        Xt : array-like, shape (n_target_samples, n_features)
+            The target input samples.
+        yt : array-like, shape (n_target_samples,)
+            The class labels for target. If some target samples are unlabelled, fill the
+            :math:`\mathbf{y_t}`'s elements with -1.
+
+            Warning: Note that, due to this convention -1 cannot be used as a
+            class label
+        batch_size : int, optional (default=128)
+            The batch size for out of sample inverse transform
+
+        Returns
+        -------
+        transp_Xt : array-like, shape (n_source_samples, n_features)
+            The transport target samples.
+        """
+
+        nx = self.nx
+
+        if self.out_of_sample_map == "ferradans":
+            return super(SinkhornTransport, self).inverse_transform(
+                Xs, ys, Xt, yt, batch_size
+            )
+
+        else:  # self.out_of_sample_map == 'continuous':
+            f = self.log_["log_u"]
+
+            indices = nx.arange(Xt.shape[0])
+            batch_ind = [
+                indices[i : i + batch_size] for i in range(0, len(indices), batch_size)
+            ]
+
+            transp_Xt = []
+            for bi in batch_ind:
+                M = dist(Xt[bi], self.xs_, metric=self.metric)
+                M = cost_normalization(M, self.norm, value=self.norm_cost_)
+
+                K = nx.exp(-M / self.reg_e + f[None, :])
+
+                transp_Xt_ = nx.dot(K, self.xs_) / nx.sum(K, axis=1)[:, None]
+
+                transp_Xt.append(transp_Xt_)
+
+            transp_Xt = nx.concatenate(transp_Xt, axis=0)
+
+            return transp_Xt
+
 
 class EMDTransport(BaseTransport):
-
     """Domain Adaptation OT method based on Earth Mover's Distance
 
     Parameters
@@ -1579,10 +1475,16 @@ class EMDTransport(BaseTransport):
         Sciences, 7(3), 1853-1882.
     """
 
-    def __init__(self, metric="sqeuclidean", norm=None, log=False,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans', limit_max=10,
-                 max_iter=100000):
+    def __init__(
+        self,
+        metric="sqeuclidean",
+        norm=None,
+        log=False,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="ferradans",
+        limit_max=10,
+        max_iter=100000,
+    ):
         self.metric = metric
         self.norm = norm
         self.log = log
@@ -1619,8 +1521,12 @@ class EMDTransport(BaseTransport):
         super(EMDTransport, self).fit(Xs, ys, Xt, yt)
 
         returned_ = emd(
-            a=self.mu_s, b=self.mu_t, M=self.cost_, numItermax=self.max_iter,
-            log=self.log)
+            a=self.mu_s,
+            b=self.mu_t,
+            M=self.cost_,
+            numItermax=self.max_iter,
+            log=self.log,
+        )
 
         # coupling estimation
         if self.log:
@@ -1663,7 +1569,7 @@ class SinkhornLpl1Transport(BaseTransport):
         The kind of out of sample mapping to apply to transport samples
         from a domain into another one. Currently the only possible option is
         "ferradans" which uses the method proposed in :ref:`[6] <references-sinkhornlpl1transport>`.
-    limit_max: float, optional (default=np.infty)
+    limit_max: float, optional (default=np.inf)
         Controls the semi supervised mode. Transport between labeled source
         and target samples of different classes will exhibit a cost defined by
         limit_max.
@@ -1678,25 +1584,34 @@ class SinkhornLpl1Transport(BaseTransport):
     References
     ----------
     .. [1] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-       "Optimal Transport for Domain Adaptation," in IEEE
-       Transactions on Pattern Analysis and Machine Intelligence ,
-       vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE
+        Transactions on Pattern Analysis and Machine Intelligence ,
+        vol.PP, no.99, pp.1-1
 
     .. [2] Rakotomamonjy, A., Flamary, R., & Courty, N. (2015).
-       Generalized conditional gradient: analysis of convergence
-       and applications. arXiv preprint arXiv:1510.06567.
+        Generalized conditional gradient: analysis of convergence
+        and applications. arXiv preprint arXiv:1510.06567.
 
     .. [6] Ferradans, S., Papadakis, N., Peyré, G., & Aujol, J. F. (2014).
-            Regularized discrete optimal transport. SIAM Journal on Imaging
-            Sciences, 7(3), 1853-1882.
+        Regularized discrete optimal transport. SIAM Journal on Imaging
+        Sciences, 7(3), 1853-1882.
     """
 
-    def __init__(self, reg_e=1., reg_cl=0.1,
-                 max_iter=10, max_inner_iter=200, log=False,
-                 tol=10e-9, verbose=False,
-                 metric="sqeuclidean", norm=None,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans', limit_max=np.infty):
+    def __init__(
+        self,
+        reg_e=1.0,
+        reg_cl=0.1,
+        max_iter=10,
+        max_inner_iter=200,
+        log=False,
+        tol=10e-9,
+        verbose=False,
+        metric="sqeuclidean",
+        norm=None,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="ferradans",
+        limit_max=np.inf,
+    ):
         self.reg_e = reg_e
         self.reg_cl = reg_cl
         self.max_iter = max_iter
@@ -1740,10 +1655,18 @@ class SinkhornLpl1Transport(BaseTransport):
             super(SinkhornLpl1Transport, self).fit(Xs, ys, Xt, yt)
 
             returned_ = sinkhorn_lpl1_mm(
-                a=self.mu_s, labels_a=ys, b=self.mu_t, M=self.cost_,
-                reg=self.reg_e, eta=self.reg_cl, numItermax=self.max_iter,
-                numInnerItermax=self.max_inner_iter, stopInnerThr=self.tol,
-                verbose=self.verbose, log=self.log)
+                a=self.mu_s,
+                labels_a=ys,
+                b=self.mu_t,
+                M=self.cost_,
+                reg=self.reg_e,
+                eta=self.reg_cl,
+                numItermax=self.max_iter,
+                numInnerItermax=self.max_inner_iter,
+                stopInnerThr=self.tol,
+                verbose=self.verbose,
+                log=self.log,
+            )
 
         # deal with the value of log
         if self.log:
@@ -1755,7 +1678,6 @@ class SinkhornLpl1Transport(BaseTransport):
 
 
 class EMDLaplaceTransport(BaseTransport):
-
     """Domain Adaptation OT method based on Earth Mover's Distance with Laplacian regularization
 
     Parameters
@@ -1806,8 +1728,8 @@ class EMDLaplaceTransport(BaseTransport):
     References
     ----------
     .. [1] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-           "Optimal Transport for Domain Adaptation," in IEEE Transactions
-           on Pattern Analysis and Machine Intelligence , vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE Transactions
+        on Pattern Analysis and Machine Intelligence , vol.PP, no.99, pp.1-1
 
     .. [2] R. Flamary, N. Courty, D. Tuia, A. Rakotomamonjy,
         "Optimal transport with Laplacian regularization: Applications to domain adaptation and shape matching,"
@@ -1817,11 +1739,24 @@ class EMDLaplaceTransport(BaseTransport):
         Regularized discrete optimal transport. SIAM Journal on Imaging Sciences, 7(3), 1853-1882.
     """
 
-    def __init__(self, reg_type='pos', reg_lap=1., reg_src=1., metric="sqeuclidean",
-                 norm=None, similarity="knn", similarity_param=None, max_iter=100, tol=1e-9,
-                 max_inner_iter=100000, inner_tol=1e-9, log=False, verbose=False,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans'):
+    def __init__(
+        self,
+        reg_type="pos",
+        reg_lap=1.0,
+        reg_src=1.0,
+        metric="sqeuclidean",
+        norm=None,
+        similarity="knn",
+        similarity_param=None,
+        max_iter=100,
+        tol=1e-9,
+        max_inner_iter=100000,
+        inner_tol=1e-9,
+        log=False,
+        verbose=False,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="ferradans",
+    ):
         self.reg = reg_type
         self.reg_lap = reg_lap
         self.reg_src = reg_src
@@ -1865,10 +1800,24 @@ class EMDLaplaceTransport(BaseTransport):
 
         super(EMDLaplaceTransport, self).fit(Xs, ys, Xt, yt)
 
-        returned_ = emd_laplace(a=self.mu_s, b=self.mu_t, xs=self.xs_,
-                                xt=self.xt_, M=self.cost_, sim=self.similarity, sim_param=self.sim_param, reg=self.reg, eta=self.reg_lap,
-                                alpha=self.reg_src, numItermax=self.max_iter, stopThr=self.tol, numInnerItermax=self.max_inner_iter,
-                                stopInnerThr=self.inner_tol, log=self.log, verbose=self.verbose)
+        returned_ = emd_laplace(
+            a=self.mu_s,
+            b=self.mu_t,
+            xs=self.xs_,
+            xt=self.xt_,
+            M=self.cost_,
+            sim=self.similarity,
+            sim_param=self.sim_param,
+            reg=self.reg,
+            eta=self.reg_lap,
+            alpha=self.reg_src,
+            numItermax=self.max_iter,
+            stopThr=self.tol,
+            numInnerItermax=self.max_inner_iter,
+            stopInnerThr=self.inner_tol,
+            log=self.log,
+            verbose=self.verbose,
+        )
 
         # coupling estimation
         if self.log:
@@ -1880,7 +1829,6 @@ class EMDLaplaceTransport(BaseTransport):
 
 
 class SinkhornL1l2Transport(BaseTransport):
-
     """Domain Adaptation OT method based on sinkhorn algorithm +
     L1L2 class regularization.
 
@@ -1929,25 +1877,34 @@ class SinkhornL1l2Transport(BaseTransport):
     References
     ----------
     .. [1] N. Courty; R. Flamary; D. Tuia; A. Rakotomamonjy,
-       "Optimal Transport for Domain Adaptation," in IEEE
-       Transactions on Pattern Analysis and Machine Intelligence ,
-       vol.PP, no.99, pp.1-1
+        "Optimal Transport for Domain Adaptation," in IEEE
+        Transactions on Pattern Analysis and Machine Intelligence ,
+        vol.PP, no.99, pp.1-1
 
     .. [2] Rakotomamonjy, A., Flamary, R., & Courty, N. (2015).
-       Generalized conditional gradient: analysis of convergence
-       and applications. arXiv preprint arXiv:1510.06567.
+        Generalized conditional gradient: analysis of convergence
+        and applications. arXiv preprint arXiv:1510.06567.
 
     .. [6] Ferradans, S., Papadakis, N., Peyré, G., & Aujol, J. F. (2014).
             Regularized discrete optimal transport. SIAM Journal on Imaging
             Sciences, 7(3), 1853-1882.
     """
 
-    def __init__(self, reg_e=1., reg_cl=0.1,
-                 max_iter=10, max_inner_iter=200,
-                 tol=10e-9, verbose=False, log=False,
-                 metric="sqeuclidean", norm=None,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans', limit_max=10):
+    def __init__(
+        self,
+        reg_e=1.0,
+        reg_cl=0.1,
+        max_iter=10,
+        max_inner_iter=200,
+        tol=10e-9,
+        verbose=False,
+        log=False,
+        metric="sqeuclidean",
+        norm=None,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="ferradans",
+        limit_max=10,
+    ):
         self.reg_e = reg_e
         self.reg_cl = reg_cl
         self.max_iter = max_iter
@@ -1988,14 +1945,21 @@ class SinkhornL1l2Transport(BaseTransport):
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs, Xt=Xt, ys=ys):
-
             super(SinkhornL1l2Transport, self).fit(Xs, ys, Xt, yt)
 
             returned_ = sinkhorn_l1l2_gl(
-                a=self.mu_s, labels_a=ys, b=self.mu_t, M=self.cost_,
-                reg=self.reg_e, eta=self.reg_cl, numItermax=self.max_iter,
-                numInnerItermax=self.max_inner_iter, stopInnerThr=self.tol,
-                verbose=self.verbose, log=self.log)
+                a=self.mu_s,
+                labels_a=ys,
+                b=self.mu_t,
+                M=self.cost_,
+                reg=self.reg_e,
+                eta=self.reg_cl,
+                numItermax=self.max_iter,
+                numInnerItermax=self.max_inner_iter,
+                stopInnerThr=self.tol,
+                verbose=self.verbose,
+                log=self.log,
+            )
 
             # deal with the value of log
             if self.log:
@@ -2008,7 +1972,6 @@ class SinkhornL1l2Transport(BaseTransport):
 
 
 class MappingTransport(BaseEstimator):
-
     """MappingTransport: DA methods that aims at jointly estimating a optimal
     transport coupling and the associated mapping
 
@@ -2068,10 +2031,23 @@ class MappingTransport(BaseEstimator):
 
     """
 
-    def __init__(self, mu=1, eta=0.001, bias=False, metric="sqeuclidean",
-                 norm=None, kernel="linear", sigma=1, max_iter=100, tol=1e-5,
-                 max_inner_iter=10, inner_tol=1e-6, log=False, verbose=False,
-                 verbose2=False):
+    def __init__(
+        self,
+        mu=1,
+        eta=0.001,
+        bias=False,
+        metric="sqeuclidean",
+        norm=None,
+        kernel="linear",
+        sigma=1,
+        max_iter=100,
+        tol=1e-5,
+        max_inner_iter=10,
+        inner_tol=1e-6,
+        log=False,
+        verbose=False,
+        verbose2=False,
+    ):
         self.metric = metric
         self.norm = norm
         self.mu = mu
@@ -2112,29 +2088,45 @@ class MappingTransport(BaseEstimator):
         self : object
             Returns self
         """
+        self._get_backend(Xs, ys, Xt, yt)
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs, Xt=Xt):
-
             self.xs_ = Xs
             self.xt_ = Xt
 
             if self.kernel == "linear":
                 returned_ = joint_OT_mapping_linear(
-                    Xs, Xt, mu=self.mu, eta=self.eta, bias=self.bias,
-                    verbose=self.verbose, verbose2=self.verbose2,
+                    Xs,
+                    Xt,
+                    mu=self.mu,
+                    eta=self.eta,
+                    bias=self.bias,
+                    verbose=self.verbose,
+                    verbose2=self.verbose2,
                     numItermax=self.max_iter,
-                    numInnerItermax=self.max_inner_iter, stopThr=self.tol,
-                    stopInnerThr=self.inner_tol, log=self.log)
+                    numInnerItermax=self.max_inner_iter,
+                    stopThr=self.tol,
+                    stopInnerThr=self.inner_tol,
+                    log=self.log,
+                )
 
             elif self.kernel == "gaussian":
                 returned_ = joint_OT_mapping_kernel(
-                    Xs, Xt, mu=self.mu, eta=self.eta, bias=self.bias,
-                    sigma=self.sigma, verbose=self.verbose,
-                    verbose2=self.verbose, numItermax=self.max_iter,
+                    Xs,
+                    Xt,
+                    mu=self.mu,
+                    eta=self.eta,
+                    bias=self.bias,
+                    sigma=self.sigma,
+                    verbose=self.verbose,
+                    verbose2=self.verbose,
+                    numItermax=self.max_iter,
                     numInnerItermax=self.max_inner_iter,
-                    stopInnerThr=self.inner_tol, stopThr=self.tol,
-                    log=self.log)
+                    stopInnerThr=self.inner_tol,
+                    stopThr=self.tol,
+                    log=self.log,
+                )
 
             # deal with the value of log
             if self.log:
@@ -2158,34 +2150,34 @@ class MappingTransport(BaseEstimator):
         transp_Xs : array-like, shape (n_source_samples, n_features)
             The transport source samples.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs):
-
-            if np.array_equal(self.xs_, Xs):
+            if nx.array_equal(self.xs_, Xs):
                 # perform standard barycentric mapping
-                transp = self.coupling_ / np.sum(self.coupling_, 1)[:, None]
+                transp = self.coupling_ / nx.sum(self.coupling_, 1)[:, None]
 
                 # set nans to 0
-                transp[~ np.isfinite(transp)] = 0
+                transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
                 # compute transported samples
-                transp_Xs = np.dot(transp, self.xt_)
+                transp_Xs = nx.dot(transp, self.xt_)
             else:
                 if self.kernel == "gaussian":
-                    K = kernel(Xs, self.xs_, method=self.kernel,
-                               sigma=self.sigma)
+                    K = kernel(Xs, self.xs_, method=self.kernel, sigma=self.sigma)
                 elif self.kernel == "linear":
                     K = Xs
                 if self.bias:
-                    K = np.hstack((K, np.ones((Xs.shape[0], 1))))
-                transp_Xs = K.dot(self.mapping_)
+                    K = nx.concatenate(
+                        [K, nx.ones((Xs.shape[0], 1), type_as=K)], axis=1
+                    )
+                transp_Xs = nx.dot(K, self.mapping_)
 
             return transp_Xs
 
 
 class UnbalancedSinkhornTransport(BaseTransport):
-
     """Domain Adaptation unbalanced OT method based on sinkhorn algorithm
 
     Parameters
@@ -2242,11 +2234,21 @@ class UnbalancedSinkhornTransport(BaseTransport):
             Sciences, 7(3), 1853-1882.
     """
 
-    def __init__(self, reg_e=1., reg_m=0.1, method='sinkhorn',
-                 max_iter=10, tol=1e-9, verbose=False, log=False,
-                 metric="sqeuclidean", norm=None,
-                 distribution_estimation=distribution_estimation_uniform,
-                 out_of_sample_map='ferradans', limit_max=10):
+    def __init__(
+        self,
+        reg_e=1.0,
+        reg_m=0.1,
+        method="sinkhorn",
+        max_iter=10,
+        tol=1e-9,
+        verbose=False,
+        log=False,
+        metric="sqeuclidean",
+        norm=None,
+        distribution_estimation=distribution_estimation_uniform,
+        out_of_sample_map="ferradans",
+        limit_max=10,
+    ):
         self.reg_e = reg_e
         self.reg_m = reg_m
         self.method = method
@@ -2285,16 +2287,24 @@ class UnbalancedSinkhornTransport(BaseTransport):
             Returns self.
         """
 
+        self._get_backend(Xs, ys, Xt, yt)
+
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs, Xt=Xt):
-
             super(UnbalancedSinkhornTransport, self).fit(Xs, ys, Xt, yt)
 
             returned_ = sinkhorn_unbalanced(
-                a=self.mu_s, b=self.mu_t, M=self.cost_,
-                reg=self.reg_e, reg_m=self.reg_m, method=self.method,
-                numItermax=self.max_iter, stopThr=self.tol,
-                verbose=self.verbose, log=self.log)
+                a=self.mu_s,
+                b=self.mu_t,
+                M=self.cost_,
+                reg=self.reg_e,
+                reg_m=self.reg_m,
+                method=self.method,
+                numItermax=self.max_iter,
+                stopThr=self.tol,
+                verbose=self.verbose,
+                log=self.log,
+            )
 
             # deal with the value of log
             if self.log:
@@ -2307,7 +2317,6 @@ class UnbalancedSinkhornTransport(BaseTransport):
 
 
 class JCPOTTransport(BaseTransport):
-
     """Domain Adaptation OT method for multi-source target shift based on Wasserstein barycenter algorithm.
 
     Parameters
@@ -2349,21 +2358,26 @@ class JCPOTTransport(BaseTransport):
     References
     ----------
     .. [1] Ievgen Redko, Nicolas Courty, Rémi Flamary, Devis Tuia
-       "Optimal transport for multi-source domain adaptation under target shift",
-       International Conference on Artificial Intelligence and Statistics (AISTATS),
-       vol. 89, p.849-858, 2019.
+        "Optimal transport for multi-source domain adaptation under target shift",
+        International Conference on Artificial Intelligence and Statistics (AISTATS),
+        vol. 89, p.849-858, 2019.
 
     .. [6] Ferradans, S., Papadakis, N., Peyré, G., & Aujol, J. F. (2014).
-            Regularized discrete optimal transport. SIAM Journal on Imaging
-            Sciences, 7(3), 1853-1882.
-
+        Regularized discrete optimal transport. SIAM Journal on Imaging
+        Sciences, 7(3), 1853-1882.
 
     """
 
-    def __init__(self, reg_e=.1, max_iter=10,
-                 tol=10e-9, verbose=False, log=False,
-                 metric="sqeuclidean",
-                 out_of_sample_map='ferradans'):
+    def __init__(
+        self,
+        reg_e=0.1,
+        max_iter=10,
+        tol=10e-9,
+        verbose=False,
+        log=False,
+        metric="sqeuclidean",
+        out_of_sample_map="ferradans",
+    ):
         self.reg_e = reg_e
         self.max_iter = max_iter
         self.tol = tol
@@ -2396,18 +2410,26 @@ class JCPOTTransport(BaseTransport):
         self : object
             Returns self.
         """
+        self._get_backend(*Xs, *ys, Xt, yt)
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs, Xt=Xt, ys=ys):
-
             self.xs_ = Xs
             self.xt_ = Xt
 
-            returned_ = jcpot_barycenter(Xs=Xs, Ys=ys, Xt=Xt, reg=self.reg_e,
-                                         metric=self.metric, distrinumItermax=self.max_iter, stopThr=self.tol,
-                                         verbose=self.verbose, log=True)
+            returned_ = jcpot_barycenter(
+                Xs=Xs,
+                Ys=ys,
+                Xt=Xt,
+                reg=self.reg_e,
+                metric=self.metric,
+                distrinumItermax=self.max_iter,
+                stopThr=self.tol,
+                verbose=self.verbose,
+                log=True,
+            )
 
-            self.coupling_ = returned_[1]['gamma']
+            self.coupling_ = returned_[1]["gamma"]
 
             # deal with the value of log
             if self.log:
@@ -2438,31 +2460,30 @@ class JCPOTTransport(BaseTransport):
         batch_size : int, optional (default=128)
             The batch size for out of sample inverse transform
         """
+        nx = self.nx
 
         transp_Xs = []
 
         # check the necessary inputs parameters are here
         if check_params(Xs=Xs):
-
-            if all([np.allclose(x, y) for x, y in zip(self.xs_, Xs)]):
-
+            if all([nx.allclose(x, y) for x, y in zip(self.xs_, Xs)]):
                 # perform standard barycentric mapping for each source domain
 
                 for coupling in self.coupling_:
-                    transp = coupling / np.sum(coupling, 1)[:, None]
+                    transp = coupling / nx.sum(coupling, 1)[:, None]
 
                     # set nans to 0
-                    transp[~ np.isfinite(transp)] = 0
+                    transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
                     # compute transported samples
-                    transp_Xs.append(np.dot(transp, self.xt_))
+                    transp_Xs.append(nx.dot(transp, self.xt_))
             else:
-
                 # perform out of sample mapping
-                indices = np.arange(Xs.shape[0])
+                indices = nx.arange(Xs.shape[0])
                 batch_ind = [
-                    indices[i:i + batch_size]
-                    for i in range(0, len(indices), batch_size)]
+                    indices[i : i + batch_size]
+                    for i in range(0, len(indices), batch_size)
+                ]
 
                 transp_Xs = []
 
@@ -2470,23 +2491,22 @@ class JCPOTTransport(BaseTransport):
                     transp_Xs_ = []
 
                     # get the nearest neighbor in the sources domains
-                    xs = np.concatenate(self.xs_, axis=0)
-                    idx = np.argmin(dist(Xs[bi], xs), axis=1)
+                    xs = nx.concatenate(self.xs_, axis=0)
+                    idx = nx.argmin(dist(Xs[bi], xs), axis=1)
 
                     # transport the source samples
                     for coupling in self.coupling_:
-                        transp = coupling / np.sum(
-                            coupling, 1)[:, None]
-                        transp[~ np.isfinite(transp)] = 0
-                        transp_Xs_.append(np.dot(transp, self.xt_))
+                        transp = coupling / nx.sum(coupling, 1)[:, None]
+                        transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
+                        transp_Xs_.append(nx.dot(transp, self.xt_))
 
-                    transp_Xs_ = np.concatenate(transp_Xs_, axis=0)
+                    transp_Xs_ = nx.concatenate(transp_Xs_, axis=0)
 
                     # define the transported points
                     transp_Xs_ = transp_Xs_[idx, :] + Xs[bi] - xs[idx, :]
                     transp_Xs.append(transp_Xs_)
 
-                transp_Xs = np.concatenate(transp_Xs, axis=0)
+                transp_Xs = nx.concatenate(transp_Xs, axis=0)
 
             return transp_Xs
 
@@ -2509,35 +2529,38 @@ class JCPOTTransport(BaseTransport):
         References
         ----------
         .. [27] Ievgen Redko, Nicolas Courty, Rémi Flamary, Devis Tuia
-           "Optimal transport for multi-source domain adaptation under target shift",
-           International Conference on Artificial Intelligence and Statistics (AISTATS), 2019.
+            "Optimal transport for multi-source domain adaptation under target shift",
+            International Conference on Artificial Intelligence and Statistics (AISTATS), 2019.
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(ys=ys):
-            yt = np.zeros((len(np.unique(np.concatenate(ys))), self.xt_.shape[0]))
+            yt = nx.zeros(
+                (len(nx.unique(nx.concatenate(ys))), self.xt_.shape[0]), type_as=ys[0]
+            )
             for i in range(len(ys)):
-                ysTemp = label_normalization(np.copy(ys[i]))
-                classes = np.unique(ysTemp)
+                ysTemp = label_normalization(ys[i])
+                classes = nx.unique(ysTemp)
                 n = len(classes)
                 ns = len(ysTemp)
 
                 # perform label propagation
-                transp = self.coupling_[i] / np.sum(self.coupling_[i], 1)[:, None]
+                transp = self.coupling_[i] / nx.sum(self.coupling_[i], 1)[:, None]
 
                 # set nans to 0
-                transp[~ np.isfinite(transp)] = 0
+                transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
                 if self.log:
-                    D1 = self.log_['D1'][i]
+                    D1 = self.log_["D1"][i]
                 else:
-                    D1 = np.zeros((n, ns))
+                    D1 = nx.zeros((n, ns), type_as=transp)
 
                     for c in classes:
                         D1[int(c), ysTemp == c] = 1
 
                 # compute propagated labels
-                yt = yt + np.dot(D1, transp) / len(ys)
+                yt = yt + nx.dot(D1, transp) / len(ys)
 
             return yt.T
 
@@ -2555,27 +2578,216 @@ class JCPOTTransport(BaseTransport):
         transp_ys : list of K array-like objects, shape K x (nk_source_samples, nb_classes)
             A list of estimated soft source labels
         """
+        nx = self.nx
 
         # check the necessary inputs parameters are here
         if check_params(yt=yt):
             transp_ys = []
-            ytTemp = label_normalization(np.copy(yt))
-            classes = np.unique(ytTemp)
+            ytTemp = label_normalization(yt)
+            classes = nx.unique(ytTemp)
             n = len(classes)
-            D1 = np.zeros((n, len(ytTemp)))
+            D1 = nx.zeros((n, len(ytTemp)), type_as=self.coupling_[0])
 
             for c in classes:
                 D1[int(c), ytTemp == c] = 1
 
             for i in range(len(self.xs_)):
-
                 # perform label propagation
-                transp = self.coupling_[i] / np.sum(self.coupling_[i], 1)[:, None]
+                transp = self.coupling_[i] / nx.sum(self.coupling_[i], 1)[:, None]
 
                 # set nans to 0
-                transp[~ np.isfinite(transp)] = 0
+                transp = nx.nan_to_num(transp, nan=0, posinf=0, neginf=0)
 
                 # compute propagated labels
-                transp_ys.append(np.dot(D1, transp.T).T)
+                transp_ys.append(nx.dot(D1, transp.T).T)
 
             return transp_ys
+
+
+class NearestBrenierPotential(BaseTransport):
+    r"""
+    Smooth Strongly Convex Nearest Brenier Potentials (SSNB) is a method from :ref:`[58]` that computes
+    an l-strongly convex potential :math:`\varphi` with an L-Lipschitz gradient such that
+    :math:`\nabla \varphi \# \mu \approx \nu`. This regularity can be enforced only on the components of a partition
+    of the ambient space (encoded by point classes), which is a relaxation compared to imposing global regularity.
+
+    SSNBs approach the target measure by solving the optimisation problem:
+
+    .. math::
+        :nowrap:
+
+        \begin{gather*}
+        \varphi \in \text{argmin}_{\varphi \in \mathcal{F}}\ \text{W}_2(\nabla \varphi \#\mu_s, \mu_t),
+        \end{gather*}
+
+    where :math:`\mathcal{F}` is the space functions that are on every set :math:`E_k` l-strongly convex
+    with an L-Lipschitz gradient, given :math:`(E_k)_{k \in [K]}` a partition of the ambient source space.
+
+    The problem is solved on "fitting" source and target data via a convex Quadratically Constrained Quadratic Program,
+    yielding the values :code:`phi` and the gradients :code:`G` at at the source points.
+    The images of "new" source samples are then found by solving a (simpler) Quadratically Constrained Linear Program
+    at each point, using the fitting "parameters" :code:`phi` and :code:`G`. We provide two possible images, which
+    correspond to "lower" and "upper potentials" (:ref:`[59]`, Theorem 3.14). Each of these two images are optimal
+    solutions of the SSNB problem, and can be used in practice.
+
+    .. warning:: This function requires the CVXPY library
+    .. warning:: Accepts any backend but will convert to Numpy then back to the backend.
+
+    Parameters
+    ----------
+    strongly_convex_constant : float, optional
+        constant for the strong convexity of the input potential phi, defaults to 0.6
+    gradient_lipschitz_constant : float, optional
+        constant for the Lipschitz property of the input gradient G, defaults to 1.4
+    its: int, optional
+        number of iterations, defaults to 100
+    log : bool, optional
+        record log if true
+    seed: int or RandomState or None, optional
+        Seed used for random number generator (for the initialisation in :code:`fit`.
+
+    References
+    ----------
+
+    .. [58] François-Pierre Paty, Alexandre d’Aspremont, and Marco Cuturi. Regularity as regularization:
+            Smooth and strongly convex brenier potentials in optimal transport. In International Conference
+            on Artificial Intelligence and Statistics, pages 1222–1232. PMLR, 2020.
+
+    .. [59] Adrien B Taylor. Convex interpolation and performance estimation of first-order methods for
+            convex optimization. PhD thesis, Catholic University of Louvain, Louvain-la-Neuve, Belgium,
+            2017.
+
+    See Also
+    --------
+    ot.mapping.nearest_brenier_potential_fit : Fitting the SSNB on source and target data
+    ot.mapping.nearest_brenier_potential_predict_bounds : Predicting SSNB images on new source data
+    """
+
+    def __init__(
+        self,
+        strongly_convex_constant=0.6,
+        gradient_lipschitz_constant=1.4,
+        log=False,
+        its=100,
+        seed=None,
+    ):
+        self.strongly_convex_constant = strongly_convex_constant
+        self.gradient_lipschitz_constant = gradient_lipschitz_constant
+        self.log = log
+        self.its = its
+        self.seed = seed
+        self.fit_log, self.predict_log = None, None
+        self.phi, self.G = None, None
+        self.fit_Xs, self.fit_ys, self.fit_Xt = None, None, None
+
+    def fit(self, Xs=None, ys=None, Xt=None, yt=None):
+        r"""
+        Fits the Smooth Strongly Convex Nearest Brenier Potential [58] to the source data :code:`Xs` to the target data
+        :code:`Xt`, with the partition given by the (optional) labels :code:`ys`.
+
+        Wrapper for :code:`ot.mapping.nearest_brenier_potential_fit`.
+
+        .. warning:: This function requires the CVXPY library
+        .. warning:: Accepts any backend but will convert to Numpy then back to the backend.
+
+        Parameters
+        ----------
+        Xs : array-like (n, d)
+            source points used to compute the optimal values phi and G
+        ys : array-like (n,), optional
+            classes of the reference points, defaults to a single class
+        Xt : array-like (n, d)
+            values of the gradients at the reference points X
+        yt : optional
+            ignored.
+
+        Returns
+        -------
+        self : object
+            Returns self.
+
+        References
+        ----------
+
+        .. [58] François-Pierre Paty, Alexandre d’Aspremont, and Marco Cuturi. Regularity as regularization:
+                Smooth and strongly convex brenier potentials in optimal transport. In International Conference
+                on Artificial Intelligence and Statistics, pages 1222–1232. PMLR, 2020.
+
+        See Also
+        --------
+        ot.mapping.nearest_brenier_potential_fit : Fitting the SSNB on source and target data
+
+        """
+        self.fit_Xs, self.fit_ys, self.fit_Xt = Xs, ys, Xt
+        returned = nearest_brenier_potential_fit(
+            Xs,
+            Xt,
+            X_classes=ys,
+            strongly_convex_constant=self.strongly_convex_constant,
+            gradient_lipschitz_constant=self.gradient_lipschitz_constant,
+            its=self.its,
+            log=self.log,
+        )
+
+        if self.log:
+            self.phi, self.G, self.fit_log = returned
+        else:
+            self.phi, self.G = returned
+
+        return self
+
+    def transform(self, Xs, ys=None):
+        r"""
+        Computes the images of the new source samples :code:`Xs` of classes :code:`ys` by the fitted
+        Smooth Strongly Convex Nearest Brenier Potentials (SSNB) :ref:`[58]`. The output is the images of two SSNB optimal
+        maps, called 'lower' and 'upper' potentials (from :ref:`[59]`, Theorem 3.14).
+
+        Wrapper for :code:`nearest_brenier_potential_predict_bounds`.
+
+        .. warning:: This function requires the CVXPY library
+        .. warning:: Accepts any backend but will convert to Numpy then back to the backend.
+
+        Parameters
+        ----------
+        Xs : array-like (m, d)
+            input source points
+        ys : : array_like (m,), optional
+            classes of the input source points, defaults to a single class
+
+        Returns
+        -------
+        G_lu : array-like (2, m, d)
+            gradients of the lower and upper bounding potentials at Y (images of the source inputs)
+
+        References
+        ----------
+
+        .. [58] François-Pierre Paty, Alexandre d’Aspremont, and Marco Cuturi. Regularity as regularization:
+                Smooth and strongly convex brenier potentials in optimal transport. In International Conference
+                on Artificial Intelligence and Statistics, pages 1222–1232. PMLR, 2020.
+
+        .. [59] Adrien B Taylor. Convex interpolation and performance estimation of first-order methods for
+                convex optimization. PhD thesis, Catholic University of Louvain, Louvain-la-Neuve, Belgium,
+                2017.
+
+        See Also
+        --------
+        ot.mapping.nearest_brenier_potential_predict_bounds : Predicting SSNB images on new source data
+
+        """
+        returned = nearest_brenier_potential_predict_bounds(
+            self.fit_Xs,
+            self.phi,
+            self.G,
+            Xs,
+            X_classes=self.fit_ys,
+            Y_classes=ys,
+            strongly_convex_constant=self.strongly_convex_constant,
+            gradient_lipschitz_constant=self.gradient_lipschitz_constant,
+            log=self.log,
+        )
+        if self.log:
+            _, G_lu, self.predict_log = returned
+        else:
+            _, G_lu = returned
+        return G_lu
